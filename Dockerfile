@@ -1,31 +1,30 @@
-# Stage 1: Build
+# ---------- Build stage ----------
 FROM dart:stable AS build
+
 WORKDIR /app
 
-# Copy dependency files
 COPY pubspec.* ./
 RUN dart pub get
 
-# Copy full project
 COPY . .
 
-# Compile Dart Frog server to executable
-RUN dart compile exe bin/server.dart -o bin/server_exe
+# Install Dart Frog CLI
+RUN dart pub global activate dart_frog_cli
+ENV PATH="$PATH:/root/.pub-cache/bin"
 
-# Stage 2: Runtime
+# Build Dart Frog server
+RUN dart_frog build
+
+# Compile executable
+RUN dart compile exe .dart_frog/build/bin/server.dart -o server
+
+# ---------- Runtime stage ----------
 FROM debian:buster-slim
+
 WORKDIR /app
 
-# Copy compiled executable and routes
-COPY --from=build /app/bin/server_exe ./bin/server_exe
-COPY --from=build /app/routes ./routes
-COPY --from=build /app/pubspec.* ./
-
-# Set Railway env variables
-ENV PORT=8080
-ENV HOST=0.0.0.0
+COPY --from=build /app/server /app/server
 
 EXPOSE 8080
 
-# Run server
-CMD ["bin/server_exe"]
+CMD ["./server"]
