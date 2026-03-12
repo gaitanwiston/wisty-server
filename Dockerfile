@@ -1,35 +1,35 @@
-# ---------- Build stage ----------
+# Stage 1: Build stage
 FROM dart:stable AS build
 
-# Set workdir
 WORKDIR /app
 
-# Copy pubspec files and get dependencies
+# Copy dependencies files
 COPY pubspec.* ./
 RUN dart pub get
 
-# Copy the full source code
+# Copy all source files
 COPY . .
 
-# Activate Dart Frog CLI and build the server
+# Activate dart_frog CLI
 RUN dart pub global activate dart_frog_cli
+
+# Build Dart Frog server
 RUN dart_frog build
 
-# Compile the generated server to an executable
+# Compile the generated server to executable
 RUN dart compile exe .dart_frog/build/bin/server.dart -o server
 
-# ---------- Runtime stage ----------
+# Stage 2: Runtime stage
 FROM debian:buster-slim
 
 WORKDIR /app
 
-# Copy compiled executable from build stage
+# Copy the executable from build stage
 COPY --from=build /app/server /app/server
 
-# Copy necessary assets (if any)
+# Copy public assets if you have any
 COPY --from=build /app/.dart_frog/build/public /app/public
 
-# Expose port
 EXPOSE 8080
 
 # Run the server
