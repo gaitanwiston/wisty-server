@@ -1,10 +1,11 @@
 import 'dart:io';
 import 'package:dart_frog/dart_frog.dart';
+import 'package:wisty_server/router.dart';
 
 Future<void> main() async {
-  final handler = const Pipeline()
+  final handler = Pipeline()
       .addMiddleware(logRequests())
-      .addHandler(_router);
+      .addHandler(router);
 
   final ip = InternetAddress.anyIPv4;
   final port = int.parse(Platform.environment['PORT'] ?? '8080');
