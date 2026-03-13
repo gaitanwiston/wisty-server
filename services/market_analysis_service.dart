@@ -1,8 +1,9 @@
 // ==========================================
-// WISTY FX – SMART MARKET ANALYSIS v11
+// WISTY FX – SMART MARKET ANALYSIS v11.1
 // Deriv-Compatible • Full Debug • Multi-Pair
 // Live Multi-Timeframe Aggregation (M1, M5, M15, M30)
 // ATR-based optional SL/TP, configurable RR & sessions
+// Null-safe & Epoch parsing fixed
 // ==========================================
 
 import 'dart:async';
@@ -42,19 +43,20 @@ class MarketAnalysisService {
   Duration timezoneOffset = const Duration(hours: 3); // UTC+3
 
   // ================= LIVE AGGREGATION =================
-  void addTick(String pair, double price, int epoch) {
+  void addTick(String pair, dynamic epochInput, double price) {
     final p = _normalize(pair);
+    final epoch = _parseEpoch(epochInput);
 
     // Add tick to M1 candles
     _candlesM1[p] =
         _addTickToCandles(_candlesM1[p] ?? [], price, epoch, timeframe: 1);
 
-    // Aggregate higher timeframes
+    // Aggregate higher timeframes safely
     _candlesM5[p] = _aggregate(_candlesM1[p]!, timeframeMinutes: 5);
     _candlesM15[p] = _aggregate(_candlesM1[p]!, timeframeMinutes: 15);
     _candlesM30[p] = _aggregate(_candlesM1[p]!, timeframeMinutes: 30);
 
-    // Prune old candles to save memory
+    // Prune old candles
     _pruneCandles(p, 1);
     _pruneCandles(p, 5);
     _pruneCandles(p, 15);
@@ -62,15 +64,19 @@ class MarketAnalysisService {
 
     // Run analysis if enough candles
     if ((_candlesM1[p]?.length ?? 0) >= minCandles) {
-      final result = _analyze(
-        p,
-        m1: _candlesM1[p]!,
-        m5: _candlesM5[p]!,
-        m15: _candlesM15[p]!,
-        m30: _candlesM30[p]!,
-      );
-      _latest[p] = result;
-      _controller.add(result);
+      try {
+        final result = _analyze(
+          p,
+          m1: _candlesM1[p]!,
+          m5: _candlesM5[p]!,
+          m15: _candlesM15[p]!,
+          m30: _candlesM30[p]!,
+        );
+        _latest[p] = result;
+        _controller.add(result);
+      } catch (e, st) {
+        print("⚠ MarketAnalysisService error: $e\n$st");
+      }
     }
   }
 
@@ -90,22 +96,42 @@ class MarketAnalysisService {
       );
     }
 
-    if (timeframeMinutes == 1) _candlesM1[p] = clean;
-    if (timeframeMinutes == 5) _candlesM5[p] = clean;
-    if (timeframeMinutes == 15) _candlesM15[p] = clean;
-    if (timeframeMinutes == 30) _candlesM30[p] = clean;
+    switch (timeframeMinutes) {
+      case 1:
+        _candlesM1[p] = clean;
+        break;
+      case 5:
+        _candlesM5[p] = clean;
+        break;
+      case 15:
+        _candlesM15[p] = clean;
+        break;
+      case 30:
+        _candlesM30[p] = clean;
+        break;
+    }
 
-    final result = _analyze(
-      p,
-      m1: _candlesM1[p] ?? clean,
-      m5: _candlesM5[p] ?? clean,
-      m15: _candlesM15[p] ?? clean,
-      m30: _candlesM30[p] ?? clean,
-    );
-
-    _latest[p] = result;
-    _controller.add(result);
-    return result;
+    try {
+      final result = _analyze(
+        p,
+        m1: _candlesM1[p] ?? clean,
+        m5: _candlesM5[p] ?? clean,
+        m15: _candlesM15[p] ?? clean,
+        m30: _candlesM30[p] ?? clean,
+      );
+      _latest[p] = result;
+      _controller.add(result);
+      return result;
+    } catch (e, st) {
+      print("⚠ analyzeMarket error: $e\n$st");
+      return MarketAnalysisResult(
+        symbol: p,
+        candles: List.unmodifiable(clean),
+        canBuy: false,
+        canSell: false,
+        reasonsFailed: ["Analysis error"],
+      );
+    }
   }
 
   MarketAnalysisResult? latestFor(String pair) => _latest[_normalize(pair)];
@@ -131,8 +157,7 @@ class MarketAnalysisService {
     // ===== EMA (M15) =====
     final ema50 = _calcEMA(m15, 50);
     final ema200 = _calcEMA(m15, 200);
-    bool emaBuy = false;
-    bool emaSell = false;
+    bool emaBuy = false, emaSell = false;
     if (ema50.isNotEmpty && ema200.isNotEmpty) {
       emaBuy = ema50.last > ema200.last && m1.last.close > ema50.last;
       emaSell = ema50.last < ema200.last && m1.last.close < ema50.last;
@@ -157,18 +182,18 @@ class MarketAnalysisService {
     // ===== SL & TP =====
     final entry = m1.last.close;
     final sl = useATRforSLTP ? _atrSL(m1, bias) : _stopLoss(m1, bias);
-    final tp = useATRforSLTP ? _atrTP(entry, sl, bias, defaultRR) : _takeProfit(entry, sl, bias, defaultRR);
+    final tp = useATRforSLTP
+        ? _atrTP(entry, sl, bias, defaultRR)
+        : _takeProfit(entry, sl, bias, defaultRR);
 
     final sessionOk = _checkSession();
     final riskOk = _checkRR(entry, sl, tp);
     if (!sessionOk) reasonsNo.add("Bad session");
     if (!riskOk) reasonsNo.add("Bad RR");
 
-    final canBuy = structureBuy && emaBuy && rsiBuy && confBuy && sessionOk && riskOk;
-    final canSell =
-        structureSell && emaSell && rsiSell && confSell && sessionOk && riskOk;
+    final canBuy = (structureBuy && emaBuy && rsiBuy && confBuy && sessionOk && riskOk);
+    final canSell = (structureSell && emaSell && rsiSell && confSell && sessionOk && riskOk);
 
-    // ================= BUILD RESULT =================
     return MarketAnalysisResult(
       symbol: pair,
       candles: List.unmodifiable(m1),
@@ -198,6 +223,18 @@ class MarketAnalysisService {
   }
 
   // ================= HELPERS =================
+  int _parseEpoch(dynamic epochInput) {
+    if (epochInput is int) return epochInput;
+    if (epochInput is String) {
+      try {
+        return DateTime.parse(epochInput).millisecondsSinceEpoch ~/ 1000;
+      } catch (_) {
+        return 0; // fallback
+      }
+    }
+    return 0;
+  }
+
   List<Candle> _addTickToCandles(
       List<Candle> list, double price, int epoch,
       {required int timeframe}) {
@@ -306,7 +343,6 @@ class MarketAnalysisService {
     return b == MarketBias.buy ? entry + risk * rr : entry - risk * rr;
   }
 
-  // ================= ATR-based SL/TP =================
   double _atrSL(List<Candle> c, MarketBias b) {
     if (c.length < atrPeriod + 1) return _stopLoss(c, b);
     final atr = _calcATR(c, atrPeriod);
