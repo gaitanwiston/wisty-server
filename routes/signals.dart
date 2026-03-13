@@ -21,20 +21,25 @@ Future<Response> onRequest(RequestContext context) async {
     );
   }
 
-  // Entry point ni close ya last candle, au 0.0 kama candles hazipo
+  // Entry price = close ya last candle, fallback 0.0
   final entry = (analysis.candles.isNotEmpty) ? analysis.candles.last.close : 0.0;
+
+  // Null-safe defaults kwa boolean fields
+  final canBuy = analysis.canBuy ?? false;
+  final canSell = analysis.canSell ?? false;
+  final biasIsBuy = analysis.biasIsBuy ?? true;
 
   // Construct signal JSON
   final signal = {
     "pair": pair,
-    "canBuy": analysis.canBuy,
-    "canSell": analysis.canSell,
-    "bias": analysis.biasIsBuy ? "BUY" : "SELL",
+    "canBuy": canBuy,
+    "canSell": canSell,
+    "bias": biasIsBuy ? "BUY" : "SELL",
     "entry": entry,
-    "stopLoss": analysis.stopLoss,
-    "takeProfit": analysis.takeProfit,
-    "conditionsMet": analysis.conditionsMet,
-    "failedConditions": analysis.reasonsFailed,
+    "stopLoss": analysis.stopLoss ?? 0.0,
+    "takeProfit": analysis.takeProfit ?? 0.0,
+    "conditionsMet": analysis.conditionsMet ?? [],
+    "failedConditions": analysis.reasonsFailed ?? [],
     "status": "ready",
     "timestamp": DateTime.now().toIso8601String(),
   };
