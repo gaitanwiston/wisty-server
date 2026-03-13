@@ -24,8 +24,23 @@ Future<Response> onRequest(RequestContext context) async {
 
     // Convert candles kwa format ya JSON
     final candleData = candles.map((c) {
+      // Safisha epoch: handle string na int
+      int epochSeconds;
+      if (c.epoch is int) {
+        epochSeconds = c.epoch as int;
+      } else if (c.epoch is String) {
+        try {
+          // Jaribu parse kama ISO8601 timestamp
+          epochSeconds = DateTime.parse(c.epoch as String).millisecondsSinceEpoch ~/ 1000;
+        } catch (_) {
+          epochSeconds = 0; // fallback
+        }
+      } else {
+        epochSeconds = 0;
+      }
+
       return {
-        'time': DateTime.fromMillisecondsSinceEpoch(c.epoch * 1000).toIso8601String(),
+        'time': DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000).toIso8601String(),
         'open': c.open,
         'high': c.high,
         'low': c.low,
