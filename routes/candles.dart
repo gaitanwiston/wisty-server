@@ -1,9 +1,9 @@
-import 'package:dart_frog/dart_frog.dart';
+import 'package:dart_frog/dart_frog.dart'; 
 import '../services/deriv_service.dart';
 import '../models/candle.dart';
 
 Future<Response> onRequest(RequestContext context) async {
-  // Pata query parameters na tumia default kama hazipo
+  // Pata query parameters, tumia defaults kama hazipo
   final pair = context.request.uri.queryParameters['pair']?.toUpperCase() ?? 'EURUSD';
   final timeframe = int.tryParse(context.request.uri.queryParameters['timeframe'] ?? '1') ?? 1;
 
@@ -20,25 +20,15 @@ Future<Response> onRequest(RequestContext context) async {
     }
 
     // Panga candles kwa ascending time
-    candles.sort((a, b) => a.epoch.compareTo(b.epoch));
+    candles.sort((a, b) {
+      int epochA = _parseEpoch(a.epoch);
+      int epochB = _parseEpoch(b.epoch);
+      return epochA.compareTo(epochB);
+    });
 
     // Convert candles kwa format ya JSON
     final candleData = candles.map((c) {
-      // Safisha epoch: handle string na int
-      int epochSeconds;
-      if (c.epoch is int) {
-        epochSeconds = c.epoch as int;
-      } else if (c.epoch is String) {
-        try {
-          // Jaribu parse kama ISO8601 timestamp
-          epochSeconds = DateTime.parse(c.epoch as String).millisecondsSinceEpoch ~/ 1000;
-        } catch (_) {
-          epochSeconds = 0; // fallback
-        }
-      } else {
-        epochSeconds = 0;
-      }
-
+      final epochSeconds = _parseEpoch(c.epoch);
       return {
         'time': DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000).toIso8601String(),
         'open': c.open,
@@ -48,7 +38,6 @@ Future<Response> onRequest(RequestContext context) async {
       };
     }).toList();
 
-    // Rudisha response
     return Response.json(
       body: {
         'pair': pair,
@@ -57,7 +46,6 @@ Future<Response> onRequest(RequestContext context) async {
       },
     );
   } catch (e, st) {
-    // Error handling bora na stack trace
     return Response.json(
       statusCode: 500,
       body: {
@@ -67,4 +55,17 @@ Future<Response> onRequest(RequestContext context) async {
       },
     );
   }
+}
+
+// Helper function to parse epoch safely
+int _parseEpoch(dynamic epoch) {
+  if (epoch is int) return epoch;
+  if (epoch is String) {
+    try {
+      return DateTime.parse(epoch).millisecondsSinceEpoch ~/ 1000;
+    } catch (_) {
+      return 0;
+    }
+  }
+  return 0;
 }

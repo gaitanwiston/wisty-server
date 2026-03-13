@@ -23,7 +23,7 @@ Future<Response> onRequest(RequestContext context) async {
     }
 
     // Entry price = close ya last candle, fallback 0.0
-    final entry = (analysis.candles.isNotEmpty) ? analysis.candles.last.close : 0.0;
+    final entry = analysis.candles.isNotEmpty ? analysis.candles.last.close : 0.0;
 
     // Null-safe defaults kwa boolean fields
     final canBuy = analysis.canBuy ?? false;
