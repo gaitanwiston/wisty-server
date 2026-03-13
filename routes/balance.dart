@@ -8,20 +8,6 @@ Future<Response> onRequest(RequestContext context) async {
   print("⚡ /balance route hit at ${DateTime.now().toIso8601String()}");
 
   try {
-    // Check DERIV_TOKEN
-    final token = deriv.token;
-    if (token == null || token.isEmpty) {
-      print("❌ DERIV_TOKEN missing in environment!");
-      return Response.json(
-        statusCode: 500,
-        body: {
-          "balance": 0.0, // fallback balance
-          "timestamp": DateTime.now().toIso8601String(),
-          "error": "DERIV_TOKEN missing"
-        },
-      );
-    }
-
     // Ensure websocket connection
     if (!deriv.isConnected) {
       print("🔌 Connecting to Deriv WebSocket...");
