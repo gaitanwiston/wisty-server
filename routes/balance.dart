@@ -1,4 +1,4 @@
-// routes/balance/index.dart
+// routes/balance.dart
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 
@@ -8,15 +8,16 @@ Future<Response> onRequest(RequestContext context) async {
   print("⚡ /balance route hit at ${DateTime.now().toIso8601String()}");
 
   try {
-    // Check if DERIV_TOKEN exists
+    // Check DERIV_TOKEN
     final token = deriv.token;
     if (token == null || token.isEmpty) {
       print("❌ DERIV_TOKEN missing in environment!");
       return Response.json(
         statusCode: 500,
         body: {
-          "error": "DERIV_TOKEN missing",
-          "message": "Please set DERIV_TOKEN in environment variables.",
+          "balance": 0.0, // fallback balance
+          "timestamp": DateTime.now().toIso8601String(),
+          "error": "DERIV_TOKEN missing"
         },
       );
     }
@@ -27,10 +28,8 @@ Future<Response> onRequest(RequestContext context) async {
       await deriv.connect();
     }
 
-    // Fetch balance
+    // Get balance
     final balance = await deriv.getBalance();
-
-    // Fallback if balance null
     final safeBalance = balance ?? 0.0;
 
     print("✅ Balance fetched: $safeBalance");
@@ -48,8 +47,9 @@ Future<Response> onRequest(RequestContext context) async {
     return Response.json(
       statusCode: 500,
       body: {
-        "error": "Failed to fetch balance",
-        "message": e.toString(),
+        "balance": 0.0,
+        "timestamp": DateTime.now().toIso8601String(),
+        "error": e.toString(),
       },
     );
   }
