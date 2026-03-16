@@ -4,6 +4,7 @@ import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 
 /// ================= GLOBAL STORAGE =================
+// Active trades per userId → Map<pair, ActiveTrade>
 final Map<String, Map<String, ActiveTrade>> _userTrades = {};
 final Map<String, bool> _tradeLocks = {};
 
@@ -67,6 +68,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
 
   final trades = _userTrades.putIfAbsent(userId, () => {});
 
+  // Prevent concurrent trade on same pair
   if (_tradeLocks[pair] == true) {
     return Response.json(
       statusCode: 429,
@@ -93,8 +95,13 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
       );
     }
 
-    // Fetch initial entry price from Deriv ticks
-    double entryPrice = await deriv.getLastPrice(pair) ?? 0.0;
+    // Fetch initial entry price from Deriv ticks (simulate if unavailable)
+    double entryPrice;
+    try {
+      entryPrice = await deriv.getLastPrice(pair) ?? stake;
+    } catch (_) {
+      entryPrice = stake; // fallback
+    }
 
     final trade = ActiveTrade(
       buy: action == "BUY",
@@ -109,30 +116,41 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
 
     trades[pair] = trade;
 
+    print("[Trade OPEN] $userId $pair $action @ $entryPrice | ContractId: $contractId");
+
     deriv.subscribeContract(contractId, (tick) async {
       if (trade.closed) return;
 
       final price = (tick['price'] ?? tick['quote'])?.toDouble() ?? 0.0;
       trade.currentPrice = price;
 
+      // Risk/reward calculation
       final risk = max((trade.entryPrice - trade.sl).abs(), 0.0001);
       final rr = (price - trade.entryPrice).abs() / risk;
 
+      // Breakeven logic
       if (!trade.breakeven && rr >= 1) {
         trade.sl = trade.entryPrice;
         trade.breakeven = true;
+        print("[Breakeven] $userId $pair | SL moved to entryPrice");
       }
 
+      // Partial close logic simulation
       if (!trade.partialClosed && rr >= 2) {
         trade.partialClosed = true;
-        // TODO: partial close logic on Deriv
+        print("[Partial Close] $userId $pair | 50% simulated close");
+        // TODO: implement actual partial close on Deriv
       }
 
-      if ((trade.buy && price >= trade.tp) || (!trade.buy && price <= trade.tp) ||
-          (trade.buy && price <= trade.sl) || (!trade.buy && price >= trade.sl)) {
+      // TP/SL hit logic
+      final tpHit = (trade.buy && price >= trade.tp) || (!trade.buy && price <= trade.tp);
+      final slHit = (trade.buy && price <= trade.sl) || (!trade.buy && price >= trade.sl);
+
+      if (tpHit || slHit) {
         await deriv.closeTradeById(contractId);
         trade.closed = true;
         trades.remove(pair);
+        print("[Trade CLOSED] $userId $pair | Price: $price | TP/SL hit");
       }
     });
 

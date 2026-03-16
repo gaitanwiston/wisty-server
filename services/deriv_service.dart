@@ -87,8 +87,6 @@ class DerivService {
         _send({"balance": 1, "subscribe": 1});
         _send({"active_symbols": "brief", "product_type": "basic"});
         break;
-      case 'balance':
-        break;
       case 'active_symbols':
         final raw = data['active_symbols'];
         if (raw is List) {
@@ -100,15 +98,6 @@ class DerivService {
               _symbolMap[norm] = actual;
             }
           }
-        }
-        break;
-      case 'ohlc':
-        final ohlc = data['ohlc'];
-        if (ohlc != null && ohlc['symbol'] != null) {
-          final symbol = _normalize(ohlc['symbol']);
-          final price = (ohlc['close'] ?? 0).toDouble();
-          final epoch = ohlc['epoch'] ?? 0;
-          _addTickToCandles(symbol, price, epoch);
         }
         break;
       case 'tick':
@@ -136,31 +125,11 @@ class DerivService {
       final actual = _symbolMap[norm] ?? norm;
       _send({"ticks": actual, "subscribe": 1});
     }
-
-    final history = await getHistoricalCandles(norm, granularity: timeframeMinutes*60, count: historyCount);
-    if (history.isNotEmpty) _candles[norm] = history;
   }
 
-  Future<List<Candle>> getHistoricalCandles(String pair, {int granularity = 60, int count = 300}) async {
-    await connect();
-    final norm = _normalize(pair);
-    final res = await _sendAndWait("candles", {
-      "ticks_history": _symbolMap[norm] ?? norm,
-      "adjust_start_time": 1,
-      "count": count,
-      "end": "latest",
-      "granularity": granularity,
-      "style": "candles",
-    });
-    final candlesData = res['candles'] ?? res['history']?['candles'] ?? [];
-    return (candlesData as List).map((c) => Candle(
-      epoch: (c['epoch'] ?? 0).toInt(),
-      open: (c['open'] ?? 0).toDouble(),
-      close: (c['close'] ?? 0).toDouble(),
-      high: (c['high'] ?? 0).toDouble(),
-      low: (c['low'] ?? 0).toDouble(),
-      volume: (c['volume'] ?? 0).toDouble(),
-    )).toList();
+  Future<List<Candle>> getCandles(String pair, {int timeframe = 1}) async {
+    await subscribeCandles(pair, timeframeMinutes: timeframe);
+    return _candles[_normalize(pair)] ?? [];
   }
 
   /// ================= NEW WRAPPERS =================
@@ -173,18 +142,14 @@ class DerivService {
     return res;
   }
 
-  Future<List<Candle>> getCandles(String pair, {int timeframe = 1}) async {
-    await subscribeCandles(pair, timeframeMinutes: timeframe);
-    return _candles[_normalize(pair)] ?? [];
-  }
-
-  Future<List<Map<String,dynamic>>> getActiveTrades() async {
-    return openTrades.entries.map((e) => {
-      "contractId": e.key,
-      "pair": e.value["pair"],
-      "stake": e.value["stake"],
-      "direction": e.value["direction"],
-    }).toList();
+  Future<double> getLastPrice(String pair) async {
+    final norm = _normalize(pair);
+    final list = _candles[norm];
+    if (list != null && list.isNotEmpty) {
+      return list.last.close;
+    }
+    // fallback: return 0.0 if no ticks yet
+    return 0.0;
   }
 
   Future<String?> placeTrade(String pair, bool isBuy, {double stake = defaultStake}) async {
