@@ -1,6 +1,6 @@
 // ==========================================
-// WISTY FX – SMART MARKET ANALYSIS v11.2
-// Null-safe, ATR/SLTP, Multi-Timeframe, Full Debug
+// WISTY FX – SMART MARKET ANALYSIS v11.3
+// Null-safe, ATR/SLTP, Multi-Timeframe, Full Debug (Server/Dart Only)
 // ==========================================
 
 import 'dart:async';
@@ -35,6 +35,9 @@ class MarketAnalysisService {
   int sessionEndHour = 22;
   Duration timezoneOffset = const Duration(hours: 3);
 
+  // Server-friendly debug flag
+  static const bool isDebug = bool.fromEnvironment('dart.vm.product') == false;
+
   void addTick(String pair, dynamic epochInput, double price) {
     try {
       final p = _normalize(pair);
@@ -64,7 +67,7 @@ class MarketAnalysisService {
         _controller.add(result);
       }
     } catch (e, st) {
-      if (kDebugMode) {
+      if (isDebug) {
         print("⚠ addTick error: $e\n$st");
       }
     }
@@ -112,7 +115,7 @@ class MarketAnalysisService {
       _controller.add(result);
       return result;
     } catch (e, st) {
-      if (kDebugMode) print("⚠ analyzeMarket error: $e\n$st");
+      if (isDebug) print("⚠ analyzeMarket error: $e\n$st");
       return MarketAnalysisResult(
         symbol: p,
         candles: List.unmodifiable(clean),
@@ -163,7 +166,7 @@ class MarketAnalysisService {
     if (confBuy || confSell) reasonsOk.add("Entry confirmed");
     else reasonsNo.add("No entry candle");
 
-    final entry = m1.isNotEmpty ? m1.last.close : 0;
+    final entry = m1.isNotEmpty ? m1.last.close.toDouble() : 0.0;
     final sl = useATRforSLTP ? _atrSL(m1, bias) : _stopLoss(m1, bias);
     final tp = useATRforSLTP
         ? _atrTP(entry, sl, bias, defaultRR)
@@ -174,8 +177,10 @@ class MarketAnalysisService {
     if (!sessionOk) reasonsNo.add("Bad session");
     if (!riskOk) reasonsNo.add("Bad RR");
 
-    final canBuy = (structureBuy && emaBuy && rsiBuy && confBuy && sessionOk && riskOk);
-    final canSell = (structureSell && emaSell && rsiSell && confSell && sessionOk && riskOk);
+    final canBuy =
+        (structureBuy && emaBuy && rsiBuy && confBuy && sessionOk && riskOk);
+    final canSell =
+        (structureSell && emaSell && rsiSell && confSell && sessionOk && riskOk);
 
     return MarketAnalysisResult(
       symbol: pair,
@@ -204,6 +209,8 @@ class MarketAnalysisService {
       takeProfit: tp,
     );
   }
+
+  // ---------------- Helper Methods ----------------
 
   int _parseEpoch(dynamic epochInput) {
     if (epochInput is int) return epochInput;
@@ -245,12 +252,14 @@ class MarketAnalysisService {
   List<Candle> _aggregate(List<Candle> candles, {required int timeframeMinutes}) {
     final out = <Candle>[];
     for (final c in candles) {
-      _addTickToCandles(out, c.close, c.epoch, timeframe: timeframeMinutes);
+      _addTickToCandles(out, c.close.toDouble(), c.epoch,
+          timeframe: timeframeMinutes);
     }
     return out;
   }
 
-  int _bucket(int epoch, int timeframe) => (epoch ~/ (timeframe * 60)) * (timeframe * 60);
+  int _bucket(int epoch, int timeframe) =>
+      (epoch ~/ (timeframe * 60)) * (timeframe * 60);
 
   MarketBias _detectStructure(List<Candle> c) {
     if (c.length < 10) return MarketBias.none;
@@ -276,20 +285,22 @@ class MarketAnalysisService {
     final bearishEngulf = last.close < prev.low && last.close < last.open;
     final bullishPin = lowerWick > body * 2 && upperWick < body;
     final bearishPin = upperWick > body * 2 && lowerWick < body;
-    if (bias == MarketBias.buy && (bullishEngulf || bullishPin)) return EntryConfirmation.bullish;
-    if (bias == MarketBias.sell && (bearishEngulf || bearishPin)) return EntryConfirmation.bearish;
+    if (bias == MarketBias.buy &&
+        (bullishEngulf || bullishPin)) return EntryConfirmation.bullish;
+    if (bias == MarketBias.sell &&
+        (bearishEngulf || bearishPin)) return EntryConfirmation.bearish;
     return EntryConfirmation.none;
   }
 
   double _calcRSI(List<Candle> c, int p) {
-    if (c.length < p + 1) return 50;
+    if (c.length < p + 1) return 50.0;
     double gain = 0, loss = 0;
     for (int i = c.length - p; i < c.length; i++) {
       final d = c[i].close - c[i - 1].close;
       if (d > 0) gain += d;
       else if (d < 0) loss += -d;
     }
-    if (gain + loss == 0) return 50;
+    if (gain + loss == 0) return 50.0;
     final rs = gain / max(loss, 0.00001);
     return 100 - (100 / (1 + rs));
   }
@@ -310,50 +321,50 @@ class MarketAnalysisService {
   }
 
   double _stopLoss(List<Candle> c, MarketBias b) {
-    if (c.length < 2) return 0;
-    if (b == MarketBias.buy) return c[c.length - 2].low;
-    if (b == MarketBias.sell) return c[c.length - 2].high;
-    return 0;
+    if (c.length < 2) return 0.0;
+    if (b == MarketBias.buy) return c[c.length - 2].low.toDouble();
+    if (b == MarketBias.sell) return c[c.length - 2].high.toDouble();
+    return 0.0;
   }
 
   double _takeProfit(double entry, double sl, MarketBias b, double rr) {
-    if (sl == 0 || entry == 0) return 0;
+    if (sl == 0.0 || entry == 0.0) return 0.0;
     final risk = (entry - sl).abs();
-    if (risk == 0) return 0;
+    if (risk == 0.0) return 0.0;
     return b == MarketBias.buy ? entry + risk * rr : entry - risk * rr;
   }
 
   double _atrSL(List<Candle> c, MarketBias b) {
     if (c.length < atrPeriod + 1) return _stopLoss(c, b);
     final atr = _calcATR(c, atrPeriod);
-    final entry = c.isNotEmpty ? c.last.close : 0;
+    final entry = c.isNotEmpty ? c.last.close.toDouble() : 0.0;
     return b == MarketBias.buy ? entry - atr : entry + atr;
   }
 
   double _atrTP(double entry, double sl, MarketBias b, double rr) {
-    if (sl == 0 || entry == 0) return 0;
+    if (sl == 0.0 || entry == 0.0) return 0.0;
     final risk = (entry - sl).abs();
-    if (risk == 0) return 0;
+    if (risk == 0.0) return 0.0;
     return b == MarketBias.buy ? entry + risk * rr : entry - risk * rr;
   }
 
   double _calcATR(List<Candle> c, int period) {
     if (c.length < period + 1) return 0.0;
-    double sum = 0;
+    double sum = 0.0;
     for (int i = c.length - period; i < c.length; i++) {
-      final high = c[i].high;
-      final low = c[i].low;
-      final prevClose = c[i - 1].close;
+      final high = c[i].high.toDouble();
+      final low = c[i].low.toDouble();
+      final prevClose = c[i - 1].close.toDouble();
       sum += max(high - low, max((high - prevClose).abs(), (low - prevClose).abs()));
     }
     return sum / period;
   }
 
   bool _checkRR(double entry, double sl, double tp) {
-    if (sl == 0 || tp == 0 || entry == 0) return false;
+    if (sl == 0.0 || tp == 0.0 || entry == 0.0) return false;
     final risk = (entry - sl).abs();
     final reward = (tp - entry).abs();
-    if (risk == 0) return false;
+    if (risk == 0.0) return false;
     return reward / risk >= defaultRR;
   }
 
