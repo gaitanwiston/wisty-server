@@ -3,14 +3,14 @@ import 'dart:math';
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 
-// ===== GLOBAL STORAGE =====
+/// ================= GLOBAL STORAGE =================
 // Active trades per userId → Map<pair, ActiveTrade>
 final Map<String, Map<String, ActiveTrade>> _userTrades = {};
 
 // Queue to avoid race conditions per pair
 final Map<String, bool> _tradeLocks = {};
 
-// ===== ActiveTrade Class =====
+/// ================= ACTIVE TRADE MODEL =================
 class ActiveTrade {
   final bool buy;
   final double stake;
@@ -19,8 +19,8 @@ class ActiveTrade {
   final String userId;
 
   double entry; // Entry price
-  double sl; // Stop loss price
-  double tp; // Take profit price
+  double sl; // Stop loss
+  double tp; // Take profit
   double currentPrice = 0;
 
   bool breakeven = false;
@@ -39,7 +39,7 @@ class ActiveTrade {
   });
 }
 
-// ===== ROUTE HANDLER =====
+/// ================= ROUTE HANDLER =================
 Future<Response> onRequest(RequestContext context) async {
   final userId = context.request.headers['x-user-id'] ?? 'guest';
 
@@ -53,7 +53,7 @@ Future<Response> onRequest(RequestContext context) async {
   }
 }
 
-// ===== OPEN TRADE =====
+/// ================= OPEN TRADE =================
 Future<Response> _openTrade(RequestContext context, String userId) async {
   final body = await context.request.json();
 
@@ -92,9 +92,11 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
     final deriv = DerivService.instance;
 
     // Open contract
-    final contractId = action == "BUY"
-        ? await deriv.buy(pair: pair, stake: stake)
-        : await deriv.sell(pair: pair, stake: stake);
+    final contractId = await deriv.placeTrade(
+      pair,
+      action == "BUY",
+      stake: stake,
+    );
 
     if (contractId == null) {
       return Response.json(
@@ -144,13 +146,13 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
 
       // TP/SL hit logic
       if ((trade.buy && price >= trade.tp) || (!trade.buy && price <= trade.tp)) {
-        await deriv.closeTrade(contractId);
+        await deriv.closeTradeById(contractId);
         trade.closed = true;
         trades.remove(pair);
       }
 
       if ((trade.buy && price <= trade.sl) || (!trade.buy && price >= trade.sl)) {
-        await deriv.closeTrade(contractId);
+        await deriv.closeTradeById(contractId);
         trade.closed = true;
         trades.remove(pair);
       }
@@ -173,7 +175,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
   }
 }
 
-// ===== GET ACTIVE TRADES =====
+/// ================= GET ACTIVE TRADES =================
 Future<Response> _getActiveTrades(String userId) async {
   final trades = _userTrades[userId] ?? {};
 
