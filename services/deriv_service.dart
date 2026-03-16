@@ -16,6 +16,7 @@ class Candle {
   final double high;
   final double low;
   final double volume;
+
   Candle({
     required this.epoch,
     required this.open,
@@ -30,7 +31,12 @@ class Pair {
   final String symbol;
   final String displayName;
   final String type;
-  Pair({required this.symbol, required this.displayName, required this.type});
+
+  Pair({
+    required this.symbol,
+    required this.displayName,
+    required this.type,
+  });
 }
 
 /// ================= DERIV SERVICE =================
@@ -50,7 +56,6 @@ class DerivService {
   final Set<String> _subscribedTicks = {};
   final Map<String, Map<String, dynamic>> openTrades = {};
   final Map<String, StreamController<Map<String, dynamic>>> _contractStreams = {};
-  final Map<String, DateTime> _lastTickTime = {};
 
   bool get isConnected => _authorized && _channel != null && _connected;
 
@@ -173,35 +178,16 @@ class DerivService {
     return _candles[_normalize(pair)] ?? [];
   }
 
-  void _addTickToCandles(String symbol, double price, int epoch) {
-    final list = _candles.putIfAbsent(symbol, () => []);
-    final bucket = (epoch ~/ 60) * 60;
-    if (list.isEmpty || list.last.epoch != bucket) {
-      final open = list.isNotEmpty ? list.last.close : price;
-      list.add(Candle(epoch: bucket, open: open, close: price, high: max(open, price), low: min(open, price), volume: 1));
-    } else {
-      final last = list.last;
-      list[list.length-1] = Candle(
-        epoch: last.epoch,
-        open: last.open,
-        close: price,
-        high: max(last.high, price),
-        low: min(last.low, price),
-        volume: last.volume+1,
-      );
-    }
+  Future<List<Map<String,dynamic>>> getActiveTrades() async {
+    return openTrades.entries.map((e) => {
+      "contractId": e.key,
+      "pair": e.value["pair"],
+      "stake": e.value["stake"],
+      "direction": e.value["direction"],
+    }).toList();
   }
 
-  /// ================= TRADING =================
-  Future<String?> buy({required String pair, required double stake}) async {
-    return _trade(pair: pair, stake: stake, isBuy: true);
-  }
-
-  Future<String?> sell({required String pair, required double stake}) async {
-    return _trade(pair: pair, stake: stake, isBuy: false);
-  }
-
-  Future<String?> _trade({required String pair, required double stake, required bool isBuy}) async {
+  Future<String?> placeTrade(String pair, bool isBuy, {double stake = defaultStake}) async {
     if (!_connected) await connect();
     final symbol = _normalize(pair);
     final actual = _symbolMap[symbol] ?? symbol;
@@ -227,7 +213,7 @@ class DerivService {
     return contractId;
   }
 
-  Future<void> closeTrade(String contractId) async {
+  Future<void> closeTradeById(String contractId) async {
     _contractStreams[contractId]?.close();
     _contractStreams.remove(contractId);
     openTrades.remove(contractId);
@@ -238,7 +224,6 @@ class DerivService {
     ctrl.stream.listen(callback);
   }
 
-  /// ================= BALANCE =================
   Future<double> getBalance() async {
     await connect();
     final completer = Completer<double>();
@@ -260,6 +245,25 @@ class DerivService {
     s = s.replaceAll(RegExp(r'[^A-Za-z]'), '').toUpperCase();
     if (!s.startsWith("FRX")) s = "FRX$s";
     return s;
+  }
+
+  void _addTickToCandles(String symbol, double price, int epoch) {
+    final list = _candles.putIfAbsent(symbol, () => []);
+    final bucket = (epoch ~/ 60) * 60;
+    if (list.isEmpty || list.last.epoch != bucket) {
+      final open = list.isNotEmpty ? list.last.close : price;
+      list.add(Candle(epoch: bucket, open: open, close: price, high: max(open, price), low: min(open, price), volume: 1));
+    } else {
+      final last = list.last;
+      list[list.length-1] = Candle(
+        epoch: last.epoch,
+        open: last.open,
+        close: price,
+        high: max(last.high, price),
+        low: min(last.low, price),
+        volume: last.volume+1,
+      );
+    }
   }
 
   void _send(Map<String,dynamic> data) {
