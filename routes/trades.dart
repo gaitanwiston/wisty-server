@@ -109,7 +109,9 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
 
     // ATR-based SL/TP if available
     final candles = MarketAnalysisService.instance.latestFor(pair)?.candles ?? [];
-    final atr = candles.length > 1 ? MarketAnalysisService.instance._calcATR(candles, 14) : 0.002;
+    final atr = candles.length > 1
+    ? MarketAnalysisService.instance.calcATR(candles, 14)
+    : 0.002;
 
     final trade = ActiveTrade(
       buy: action == "BUY",

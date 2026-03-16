@@ -348,7 +348,7 @@ class MarketAnalysisService {
     return b == MarketBias.buy ? entry + risk * rr : entry - risk * rr;
   }
 
-  double _calcATR(List<Candle> c, int period) {
+  double calcATR(List<Candle> c, int period) {
     if (c.length < period + 1) return 0.0;
     double sum = 0.0;
     for (int i = c.length - period; i < c.length; i++) {
@@ -392,30 +392,8 @@ class MarketAnalysisService {
       list.removeRange(0, list.length - maxCandlesStored);
     }
   }
-double _calcATR(List candles, int period) {
-  if (candles.length < period + 1) return 0.002;
 
-  double atr = 0.0;
-
-  for (int i = candles.length - period; i < candles.length; i++) {
-    final current = candles[i];
-    final prev = candles[i - 1];
-
-    final high = current.high;
-    final low = current.low;
-    final prevClose = prev.close;
-
-    final tr1 = high - low;
-    final tr2 = (high - prevClose).abs();
-    final tr3 = (low - prevClose).abs();
-
-    final trueRange = [tr1, tr2, tr3].reduce((a, b) => a > b ? a : b);
-    atr += trueRange;
-  }
-
-  return atr / period;
-}
-
+ 
   List<Candle> _getCandlesByTimeframe(String pair, int timeframe) {
     switch (timeframe) {
       case 1:
