@@ -22,7 +22,6 @@ Future<Response> onRequest(RequestContext context) async {
           "entry": 0.0,
           "stopLoss": 0.0,
           "takeProfit": 0.0,
-          "probability": 0,
           "conditionsMet": [],
           "failedConditions": [],
           "timestamp": DateTime.now().toIso8601String(),
@@ -32,8 +31,8 @@ Future<Response> onRequest(RequestContext context) async {
 
     // ---------- SAFE DATA ----------
     final candles = analysis.candles;
-    final entry =
-        candles.isNotEmpty ? (candles.last.close ?? 0.0) : 0.0;
+
+    final entry = candles.isNotEmpty ? candles.last.close : 0.0;
 
     final canBuy = analysis.canBuy ?? false;
     final canSell = analysis.canSell ?? false;
@@ -42,8 +41,6 @@ Future<Response> onRequest(RequestContext context) async {
 
     final stopLoss = analysis.stopLoss ?? 0.0;
     final takeProfit = analysis.takeProfit ?? 0.0;
-
-    final probability = analysis.probability ?? 0;
 
     final conditionsMet = analysis.conditionsMet ?? <String>[];
     final failedConditions = analysis.reasonsFailed ?? <String>[];
@@ -62,8 +59,6 @@ Future<Response> onRequest(RequestContext context) async {
       "stopLoss": stopLoss,
       "takeProfit": takeProfit,
 
-      "probability": probability,
-
       "conditionsMet": conditionsMet,
       "failedConditions": failedConditions,
 
@@ -74,7 +69,6 @@ Future<Response> onRequest(RequestContext context) async {
 
     return Response.json(body: response);
   } catch (e, st) {
-    // error logging safe
     print("⚠ SIGNALS ERROR [$pair]: $e");
 
     return Response.json(
