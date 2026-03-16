@@ -1,9 +1,6 @@
 // ==========================================
-// WISTY FX – SMART MARKET ANALYSIS v11.1
-// Deriv-Compatible • Full Debug • Multi-Pair
-// Live Multi-Timeframe Aggregation (M1, M5, M15, M30)
-// ATR-based optional SL/TP, configurable RR & sessions
-// Null-safe & Epoch parsing fixed
+// WISTY FX – SMART MARKET ANALYSIS v11.2
+// Null-safe, ATR/SLTP, Multi-Timeframe, Full Debug
 // ==========================================
 
 import 'dart:async';
@@ -15,72 +12,64 @@ enum MarketBias { buy, sell, none }
 enum EntryConfirmation { bullish, bearish, none }
 
 class MarketAnalysisService {
-  // ================= SINGLETON =================
   MarketAnalysisService._internal();
   static final MarketAnalysisService instance = MarketAnalysisService._internal();
   factory MarketAnalysisService() => instance;
 
-  // ================= STREAM =================
   final _controller = StreamController<MarketAnalysisResult>.broadcast();
   Stream<MarketAnalysisResult> get analysisStream => _controller.stream;
 
-  // ================= STORAGE =================
   final Map<String, List<Candle>> _candlesM1 = {};
   final Map<String, List<Candle>> _candlesM5 = {};
   final Map<String, List<Candle>> _candlesM15 = {};
   final Map<String, List<Candle>> _candlesM30 = {};
   final Map<String, MarketAnalysisResult> _latest = {};
 
-  // ================= CONFIG =================
   int rsiPeriod = 14;
   double defaultRR = 2.0;
   int minCandles = 100;
-  int maxCandlesStored = 500; // memory pruning
-  bool useATRforSLTP = true; // optional ATR-based SL/TP
+  int maxCandlesStored = 500;
+  bool useATRforSLTP = true;
   int atrPeriod = 14;
   int sessionStartHour = 8;
   int sessionEndHour = 22;
-  Duration timezoneOffset = const Duration(hours: 3); // UTC+3
+  Duration timezoneOffset = const Duration(hours: 3);
 
-  // ================= LIVE AGGREGATION =================
   void addTick(String pair, dynamic epochInput, double price) {
-    final p = _normalize(pair);
-    final epoch = _parseEpoch(epochInput);
+    try {
+      final p = _normalize(pair);
+      final epoch = _parseEpoch(epochInput);
 
-    // Add tick to M1 candles
-    _candlesM1[p] =
-        _addTickToCandles(_candlesM1[p] ?? [], price, epoch, timeframe: 1);
+      _candlesM1[p] =
+          _addTickToCandles(_candlesM1[p] ?? [], price, epoch, timeframe: 1);
 
-    // Aggregate higher timeframes safely
-    _candlesM5[p] = _aggregate(_candlesM1[p]!, timeframeMinutes: 5);
-    _candlesM15[p] = _aggregate(_candlesM1[p]!, timeframeMinutes: 15);
-    _candlesM30[p] = _aggregate(_candlesM1[p]!, timeframeMinutes: 30);
+      _candlesM5[p] = _aggregate(_candlesM1[p]!, timeframeMinutes: 5);
+      _candlesM15[p] = _aggregate(_candlesM1[p]!, timeframeMinutes: 15);
+      _candlesM30[p] = _aggregate(_candlesM1[p]!, timeframeMinutes: 30);
 
-    // Prune old candles
-    _pruneCandles(p, 1);
-    _pruneCandles(p, 5);
-    _pruneCandles(p, 15);
-    _pruneCandles(p, 30);
+      _pruneCandles(p, 1);
+      _pruneCandles(p, 5);
+      _pruneCandles(p, 15);
+      _pruneCandles(p, 30);
 
-    // Run analysis if enough candles
-    if ((_candlesM1[p]?.length ?? 0) >= minCandles) {
-      try {
+      if ((_candlesM1[p]?.length ?? 0) >= minCandles) {
         final result = _analyze(
           p,
           m1: _candlesM1[p]!,
-          m5: _candlesM5[p]!,
-          m15: _candlesM15[p]!,
-          m30: _candlesM30[p]!,
+          m5: _candlesM5[p] ?? [],
+          m15: _candlesM15[p] ?? [],
+          m30: _candlesM30[p] ?? [],
         );
         _latest[p] = result;
         _controller.add(result);
-      } catch (e, st) {
-        print("⚠ MarketAnalysisService error: $e\n$st");
+      }
+    } catch (e, st) {
+      if (kDebugMode) {
+        print("⚠ addTick error: $e\n$st");
       }
     }
   }
 
-  // ================= BACKWARD COMPATIBILITY =================
   Future<MarketAnalysisResult> analyzeMarket(
       String symbol, List<Candle> candles, int timeframeMinutes) async {
     final p = _normalize(symbol);
@@ -123,7 +112,7 @@ class MarketAnalysisService {
       _controller.add(result);
       return result;
     } catch (e, st) {
-      print("⚠ analyzeMarket error: $e\n$st");
+      if (kDebugMode) print("⚠ analyzeMarket error: $e\n$st");
       return MarketAnalysisResult(
         symbol: p,
         candles: List.unmodifiable(clean),
@@ -136,7 +125,6 @@ class MarketAnalysisService {
 
   MarketAnalysisResult? latestFor(String pair) => _latest[_normalize(pair)];
 
-  // ================= CORE ANALYSIS =================
   MarketAnalysisResult _analyze(
     String pair, {
     required List<Candle> m1,
@@ -147,14 +135,12 @@ class MarketAnalysisService {
     final reasonsOk = <String>[];
     final reasonsNo = <String>[];
 
-    // ===== STRUCTURE (M30 trend) =====
     final bias = _detectStructure(m30);
     final structureBuy = bias == MarketBias.buy;
     final structureSell = bias == MarketBias.sell;
     if (bias == MarketBias.none) reasonsNo.add("No clear structure");
     else reasonsOk.add("Structure ${bias.name}");
 
-    // ===== EMA (M15) =====
     final ema50 = _calcEMA(m15, 50);
     final ema200 = _calcEMA(m15, 200);
     bool emaBuy = false, emaSell = false;
@@ -165,22 +151,19 @@ class MarketAnalysisService {
     if (emaBuy || emaSell) reasonsOk.add("EMA trend ok");
     else reasonsNo.add("EMA not aligned");
 
-    // ===== RSI (M15) =====
     final rsi = _calcRSI(m15, rsiPeriod);
     final rsiBuy = rsi >= 52 && rsi <= 68;
     final rsiSell = rsi <= 48 && rsi >= 32;
     if (rsiBuy || rsiSell) reasonsOk.add("RSI momentum ok");
     else reasonsNo.add("RSI not good ($rsi)");
 
-    // ===== ENTRY (last candle M1) =====
     final conf = _confirmation(m1, bias);
     final confBuy = conf == EntryConfirmation.bullish;
     final confSell = conf == EntryConfirmation.bearish;
     if (confBuy || confSell) reasonsOk.add("Entry confirmed");
     else reasonsNo.add("No entry candle");
 
-    // ===== SL & TP =====
-    final entry = m1.last.close;
+    final entry = m1.isNotEmpty ? m1.last.close : 0;
     final sl = useATRforSLTP ? _atrSL(m1, bias) : _stopLoss(m1, bias);
     final tp = useATRforSLTP
         ? _atrTP(entry, sl, bias, defaultRR)
@@ -213,7 +196,7 @@ class MarketAnalysisService {
       ema50: ema50,
       ema200: ema200,
       indicators: {'rsi$rsiPeriod': rsi},
-      entryCandles: [m1.length - 1],
+      entryCandles: m1.isNotEmpty ? [m1.length - 1] : [],
       structurePoints: const [],
       conditionsMet: reasonsOk,
       reasonsFailed: reasonsNo,
@@ -222,15 +205,12 @@ class MarketAnalysisService {
     );
   }
 
-  // ================= HELPERS =================
   int _parseEpoch(dynamic epochInput) {
     if (epochInput is int) return epochInput;
     if (epochInput is String) {
       try {
         return DateTime.parse(epochInput).millisecondsSinceEpoch ~/ 1000;
-      } catch (_) {
-        return 0; // fallback
-      }
+      } catch (_) {}
     }
     return 0;
   }
@@ -337,7 +317,7 @@ class MarketAnalysisService {
   }
 
   double _takeProfit(double entry, double sl, MarketBias b, double rr) {
-    if (sl == 0) return 0;
+    if (sl == 0 || entry == 0) return 0;
     final risk = (entry - sl).abs();
     if (risk == 0) return 0;
     return b == MarketBias.buy ? entry + risk * rr : entry - risk * rr;
@@ -346,12 +326,12 @@ class MarketAnalysisService {
   double _atrSL(List<Candle> c, MarketBias b) {
     if (c.length < atrPeriod + 1) return _stopLoss(c, b);
     final atr = _calcATR(c, atrPeriod);
-    final entry = c.last.close;
+    final entry = c.isNotEmpty ? c.last.close : 0;
     return b == MarketBias.buy ? entry - atr : entry + atr;
   }
 
   double _atrTP(double entry, double sl, MarketBias b, double rr) {
-    if (sl == 0) return 0;
+    if (sl == 0 || entry == 0) return 0;
     final risk = (entry - sl).abs();
     if (risk == 0) return 0;
     return b == MarketBias.buy ? entry + risk * rr : entry - risk * rr;
@@ -370,7 +350,7 @@ class MarketAnalysisService {
   }
 
   bool _checkRR(double entry, double sl, double tp) {
-    if (sl == 0 || tp == 0) return false;
+    if (sl == 0 || tp == 0 || entry == 0) return false;
     final risk = (entry - sl).abs();
     final reward = (tp - entry).abs();
     if (risk == 0) return false;

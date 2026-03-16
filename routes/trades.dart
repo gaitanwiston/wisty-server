@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
+import '../services/market_analysis_service.dart';
 
 /// ================= GLOBAL STORAGE =================
 // Active trades per userId → Map<pair, ActiveTrade>
@@ -67,15 +68,15 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
   }
 
   final trades = _userTrades.putIfAbsent(userId, () => {});
+  final lockKey = '$userId:$pair';
 
-  // Prevent concurrent trade on same pair
-  if (_tradeLocks[pair] == true) {
+  if (_tradeLocks[lockKey] == true) {
     return Response.json(
       statusCode: 429,
       body: {'error': 'Trade processing in progress for $pair'},
     );
   }
-  _tradeLocks[pair] = true;
+  _tradeLocks[lockKey] = true;
 
   try {
     if (trades.containsKey(pair)) {
@@ -86,6 +87,8 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
     }
 
     final deriv = DerivService.instance;
+    if (!deriv.isConnected) await deriv.connect();
+
     final contractId = await deriv.placeTrade(pair, action == "BUY", stake: stake);
 
     if (contractId == null) {
@@ -95,13 +98,18 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
       );
     }
 
-    // Fetch initial entry price from Deriv ticks (simulate if unavailable)
+    // Entry price from last tick, fallback to 0.0
     double entryPrice;
     try {
-      entryPrice = await deriv.getLastPrice(pair) ?? stake;
+      final rawPrice = await deriv.getLastPrice(pair);
+      entryPrice = rawPrice ?? 0.0;
     } catch (_) {
-      entryPrice = stake; // fallback
+      entryPrice = 0.0;
     }
+
+    // ATR-based SL/TP if available
+    final candles = MarketAnalysisService.instance.latestFor(pair)?.candles ?? [];
+    final atr = candles.length > 1 ? MarketAnalysisService.instance._calcATR(candles, 14) : 0.002;
 
     final trade = ActiveTrade(
       buy: action == "BUY",
@@ -110,8 +118,8 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
       pair: pair,
       userId: userId,
       entryPrice: entryPrice,
-      sl: action == "BUY" ? entryPrice - 0.002 : entryPrice + 0.002,
-      tp: action == "BUY" ? entryPrice + 0.006 : entryPrice - 0.006,
+      sl: action == "BUY" ? entryPrice - atr : entryPrice + atr,
+      tp: action == "BUY" ? entryPrice + atr * 3 : entryPrice - atr * 3,
     );
 
     trades[pair] = trade;
@@ -119,38 +127,39 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
     print("[Trade OPEN] $userId $pair $action @ $entryPrice | ContractId: $contractId");
 
     deriv.subscribeContract(contractId, (tick) async {
-      if (trade.closed) return;
+      try {
+        if (trade.closed) return;
 
-      final price = (tick['price'] ?? tick['quote'])?.toDouble() ?? 0.0;
-      trade.currentPrice = price;
+        final rawPrice = tick['price'] ?? tick['quote'];
+        final price = (rawPrice is num ? rawPrice.toDouble() : double.tryParse('$rawPrice') ?? 0.0);
+        trade.currentPrice = price;
 
-      // Risk/reward calculation
-      final risk = max((trade.entryPrice - trade.sl).abs(), 0.0001);
-      final rr = (price - trade.entryPrice).abs() / risk;
+        final risk = max((trade.entryPrice - trade.sl).abs(), 0.00001);
+        final rr = (price - trade.entryPrice).abs() / risk;
 
-      // Breakeven logic
-      if (!trade.breakeven && rr >= 1) {
-        trade.sl = trade.entryPrice;
-        trade.breakeven = true;
-        print("[Breakeven] $userId $pair | SL moved to entryPrice");
-      }
+        if (!trade.breakeven && rr >= 1) {
+          trade.sl = trade.entryPrice;
+          trade.breakeven = true;
+          print("[Breakeven] $userId $pair | SL moved to entryPrice");
+        }
 
-      // Partial close logic simulation
-      if (!trade.partialClosed && rr >= 2) {
-        trade.partialClosed = true;
-        print("[Partial Close] $userId $pair | 50% simulated close");
-        // TODO: implement actual partial close on Deriv
-      }
+        if (!trade.partialClosed && rr >= 2) {
+          trade.partialClosed = true;
+          print("[Partial Close] $userId $pair | 50% simulated close");
+        }
 
-      // TP/SL hit logic
-      final tpHit = (trade.buy && price >= trade.tp) || (!trade.buy && price <= trade.tp);
-      final slHit = (trade.buy && price <= trade.sl) || (!trade.buy && price >= trade.sl);
+        final tpHit = (trade.buy && price >= trade.tp) || (!trade.buy && price <= trade.tp);
+        final slHit = (trade.buy && price <= trade.sl) || (!trade.buy && price >= trade.sl);
 
-      if (tpHit || slHit) {
-        await deriv.closeTradeById(contractId);
-        trade.closed = true;
-        trades.remove(pair);
-        print("[Trade CLOSED] $userId $pair | Price: $price | TP/SL hit");
+        if (tpHit || slHit) {
+          await deriv.closeTradeById(contractId);
+          trade.closed = true;
+          trades.remove(pair);
+          _tradeLocks.remove(lockKey);
+          print("[Trade CLOSED] $userId $pair | Price: $price | TP/SL hit");
+        }
+      } catch (e, st) {
+        print("⚠ Trade subscription error: $e\n$st");
       }
     });
 
@@ -165,7 +174,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
       'tp': trade.tp,
     });
   } finally {
-    _tradeLocks[pair] = false;
+    if (!_userTrades[userId]!.containsKey(pair)) _tradeLocks.remove(lockKey);
   }
 }
 
@@ -173,7 +182,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
 Future<Response> _getActiveTrades(String userId) async {
   final trades = _userTrades[userId] ?? {};
 
-  final response = trades.map((pair, t) => MapEntry(pair, {
+  final response = trades.values.map((t) => {
         'contractId': t.contractId,
         'pair': t.pair,
         'buy': t.buy,
@@ -185,7 +194,7 @@ Future<Response> _getActiveTrades(String userId) async {
         'breakeven': t.breakeven,
         'partialClosed': t.partialClosed,
         'closed': t.closed,
-      }));
+      }).toList();
 
   return Response.json(body: response);
 }
