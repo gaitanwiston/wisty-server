@@ -15,18 +15,17 @@ final Map<WebSocket, Timer> _heartbeats = {};
 
 /// ================= WebSocket Handler =================
 Future<Response> onRequest(RequestContext context) async {
+  final httpRequest = context.requestContext.request; // Actual HttpRequest
+
   // Ensure WebSocket upgrade
-  if (!WebSocketTransformer.isUpgradeRequest(context.request)) {
+  if (!WebSocketTransformer.isUpgradeRequest(httpRequest)) {
     return Response.json(
       statusCode: 400,
       body: {"error": "WebSocket upgrade required"},
     );
   }
 
-  // Convert to HttpRequest for WebSocketTransformer
-  final httpRequest = context.request as HttpRequest;
   late WebSocket ws;
-
   try {
     ws = await WebSocketTransformer.upgrade(httpRequest);
   } catch (e) {
@@ -36,7 +35,8 @@ Future<Response> onRequest(RequestContext context) async {
     );
   }
 
-  final pair = (context.request.uri.queryParameters['pair'] ?? 'FRXEURUSD').toUpperCase();
+  final pair =
+      (context.request.uri.queryParameters['pair'] ?? 'FRXEURUSD').toUpperCase();
   final service = MarketAnalysisService.instance;
 
   // Send latest analysis immediately
@@ -44,9 +44,7 @@ Future<Response> onRequest(RequestContext context) async {
   if (latest != null) {
     try {
       ws.add(jsonEncode(_buildPayload(pair, latest)));
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) {}
   } else {
     ws.add(jsonEncode({
       "pair": pair,
@@ -65,7 +63,7 @@ Future<Response> onRequest(RequestContext context) async {
       }
     },
     onError: (err) {
-      debugPrint("⚠ Analysis stream error: $err");
+      print("⚠ Analysis stream error: $err");
     },
   );
 
@@ -79,7 +77,7 @@ Future<Response> onRequest(RequestContext context) async {
   ws.listen(
     (msg) {
       if (msg == 'ping') ws.add('pong');
-      // Future: handle custom messages from client here
+      // TODO: handle custom messages from client here
     },
     onDone: () => _cleanup(ws, pair),
     onError: (_) => _cleanup(ws, pair),
@@ -145,7 +143,6 @@ void _cleanupSocket(WebSocket ws) {
 
 /// ================= Helper =================
 String _getPair(WebSocket ws) {
-  // Find the pair this ws belongs to
   for (final entry in _clients.entries) {
     if (entry.value.contains(ws)) return entry.key;
   }
