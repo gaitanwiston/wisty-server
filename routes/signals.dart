@@ -13,7 +13,6 @@ final Map<WebSocket, Timer> _heartbeats = {};
 
 /// ================= Route Entry Point =================
 Handler onRequest(Request request) {
-  // use shelf_web_socket handler
   return webSocketHandler((WebSocket ws) {
     final pair = 'FRXEURUSD';
     final service = MarketAnalysisService.instance;

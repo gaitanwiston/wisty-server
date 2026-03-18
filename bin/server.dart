@@ -1,18 +1,30 @@
 import 'dart:io';
 import 'package:dart_frog/dart_frog.dart';
+
+// Import all route handlers
 import '../routes/signals.dart' as signals;
+import '../routes/trades.dart' as trades;
+import '../routes/pairs.dart' as pairs;
+import '../routes/last-prices.dart' as last_prices;
+import '../routes/candles.dart' as candles;
+import '../routes/balance.dart' as balance;
 
 Future<void> main() async {
-  // Manual Router
+  // ---------------- Manual Router ----------------
   final router = Router()
-    ..all('/signals', signals.onRequest);
-
-  // Pipeline ya middleware (remove logRequests kama hutaki shelf logs)
+    ..all('/signals', signals.onRequest)
+    ..all('/trades', trades.onRequest)
+    ..all('/pairs', pairs.onRequest)
+    ..all('/last-prices', last_prices.onRequest)
+    ..all('/candles', candles.onRequest)
+    ..all('/balance', balance.onRequest);
+  
+  // ---------------- Pipeline + Middleware ----------------
   final handler = Pipeline()
-      //.addMiddleware(logRequests()) // uncomment ikiwa una shelf logs
+      //.addMiddleware(logRequests()) // Uncomment kwa development
       .addHandler(router);
 
-  // Listen on all interfaces (0.0.0.0) na PORT env var au default 8080
+  // ---------------- Server Configuration ----------------
   final ip = InternetAddress.anyIPv4;
   final port = int.tryParse(Platform.environment['PORT'] ?? '8080') ?? 8080;
 
