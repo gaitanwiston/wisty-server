@@ -5,7 +5,6 @@ import '../services/deriv_service.dart';
 import '../services/market_analysis_service.dart';
 
 /// ================= GLOBAL STORAGE =================
-// Active trades per userId → Map<pair, ActiveTrade>
 final Map<String, Map<String, ActiveTrade>> _userTrades = {};
 final Map<String, bool> _tradeLocks = {};
 
@@ -56,20 +55,22 @@ Future<Response> onRequest(RequestContext context) async {
 /// ================= OPEN TRADE =================
 Future<Response> _openTrade(RequestContext context, String userId) async {
   final body = await context.request.json();
-  final pair = (body['pair'] as String?)?.toUpperCase();
+  final pairRaw = (body['pair'] as String?)?.toUpperCase();
   final action = (body['action'] as String?)?.toUpperCase();
   final stake = (body['stake'] as num?)?.toDouble();
 
-  if (pair == null || action == null || stake == null) {
+  if (pairRaw == null || action == null || stake == null) {
     return Response.json(
       statusCode: 400,
       body: {'error': 'Missing parameters: pair, action, or stake'},
     );
   }
 
+  final pair = _normalizePair(pairRaw);
   final trades = _userTrades.putIfAbsent(userId, () => {});
   final lockKey = '$userId:$pair';
 
+  // Trade lock check
   if (_tradeLocks[lockKey] == true) {
     return Response.json(
       statusCode: 429,
@@ -79,6 +80,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
   _tradeLocks[lockKey] = true;
 
   try {
+    // Prevent duplicate trade
     if (trades.containsKey(pair)) {
       return Response.json(
         statusCode: 400,
@@ -86,11 +88,12 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
       );
     }
 
+    // Connect to Deriv
     final deriv = DerivService.instance;
     if (!deriv.isConnected) await deriv.connect();
 
+    // Place trade
     final contractId = await deriv.placeTrade(pair, action == "BUY", stake: stake);
-
     if (contractId == null) {
       return Response.json(
         statusCode: 500,
@@ -98,7 +101,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
       );
     }
 
-    // Entry price from last tick, fallback to 0.0
+    // Get entry price
     double entryPrice;
     try {
       final rawPrice = await deriv.getLastPrice(pair);
@@ -107,12 +110,19 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
       entryPrice = 0.0;
     }
 
-    // ATR-based SL/TP if available
-    final candles = MarketAnalysisService.instance.latestFor(pair)?.candles ?? [];
-    final atr = candles.length > 1
-    ? MarketAnalysisService.instance.calcATR(candles, 14)
-    : 0.002;
+    // Calculate ATR for SL/TP
+    final rawCandles = MarketAnalysisService.instance.latestFor(pair)?.candles ?? [];
+final candles = rawCandles.map((c) => Candle(
+  epoch: c.epoch,
+  open: c.open,
+  high: c.high,
+  low: c.low,
+  close: c.close,
+  volume: c.volume,
+)).toList();
+final atr = candles.length > 1 ? MarketAnalysisService.instance.calcATR(candles, 14) : 0.002;
 
+    // Create active trade
     final trade = ActiveTrade(
       buy: action == "BUY",
       stake: stake,
@@ -128,6 +138,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
 
     print("[Trade OPEN] $userId $pair $action @ $entryPrice | ContractId: $contractId");
 
+    // Subscribe to contract ticks
     deriv.subscribeContract(contractId, (tick) async {
       try {
         if (trade.closed) return;
@@ -139,17 +150,20 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
         final risk = max((trade.entryPrice - trade.sl).abs(), 0.00001);
         final rr = (price - trade.entryPrice).abs() / risk;
 
+        // Breakeven
         if (!trade.breakeven && rr >= 1) {
           trade.sl = trade.entryPrice;
           trade.breakeven = true;
           print("[Breakeven] $userId $pair | SL moved to entryPrice");
         }
 
+        // Partial close
         if (!trade.partialClosed && rr >= 2) {
           trade.partialClosed = true;
           print("[Partial Close] $userId $pair | 50% simulated close");
         }
 
+        // Check TP/SL hit
         final tpHit = (trade.buy && price >= trade.tp) || (!trade.buy && price <= trade.tp);
         final slHit = (trade.buy && price <= trade.sl) || (!trade.buy && price >= trade.sl);
 
@@ -199,4 +213,12 @@ Future<Response> _getActiveTrades(String userId) async {
       }).toList();
 
   return Response.json(body: response);
+}
+
+/// ================= HELPERS =================
+String _normalizePair(String p) {
+  p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+  while (p.startsWith('FRXFRX')) p = p.substring(3);
+  if (!p.startsWith('FRX')) p = 'FRX$p';
+  return p;
 }

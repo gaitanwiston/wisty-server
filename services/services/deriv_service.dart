@@ -4,7 +4,7 @@ import 'dart:math';
 import 'package:flutter/widgets.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import '../models/candle.dart' as myCandle;
+import '../models/candle.dart';
 import '../models/asset.dart';
 import '../config.dart';
 import 'market_analysis_service.dart';
