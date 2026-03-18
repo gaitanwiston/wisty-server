@@ -15,69 +15,85 @@ final Map<WebSocket, Timer> _heartbeats = {};
 
 /// ================= WebSocket Handler =================
 Future<Response> onRequest(RequestContext context) async {
-  // Check WebSocket upgrade header
-  if (!context.request.headers.containsKey('upgrade')) {
+  // Ensure WebSocket upgrade
+  if (!WebSocketTransformer.isUpgradeRequest(context.request)) {
     return Response.json(
       statusCode: 400,
       body: {"error": "WebSocket upgrade required"},
     );
   }
 
-  // Convert Dart Frog Request to HttpRequest for WebSocketTransformer
+  // Convert to HttpRequest for WebSocketTransformer
   final httpRequest = context.request as HttpRequest;
-  final ws = await WebSocketTransformer.upgrade(httpRequest);
+  late WebSocket ws;
+
+  try {
+    ws = await WebSocketTransformer.upgrade(httpRequest);
+  } catch (e) {
+    return Response.json(
+      statusCode: 500,
+      body: {"error": "WebSocket upgrade failed: $e"},
+    );
+  }
 
   final pair = (context.request.uri.queryParameters['pair'] ?? 'FRXEURUSD').toUpperCase();
   final service = MarketAnalysisService.instance;
 
   // Send latest analysis immediately
   final latest = service.latestFor(pair);
-  try {
-    ws.add(jsonEncode(
-      latest != null
-          ? _buildPayload(pair, latest)
-          : {
-              "pair": pair,
-              "status": "waiting",
-              "timestamp": DateTime.now().toUtc().toIso8601String(),
-            },
-    ));
-  } catch (_) {}
+  if (latest != null) {
+    try {
+      ws.add(jsonEncode(_buildPayload(pair, latest)));
+    } catch (_) {
+      // ignore
+    }
+  } else {
+    ws.add(jsonEncode({
+      "pair": pair,
+      "status": "waiting",
+      "timestamp": DateTime.now().toUtc().toIso8601String(),
+    }));
+  }
 
   // Subscribe to live analysis updates
-  final sub = service.analysisStream.listen((MarketAnalysisResult analysis) {
-    if (analysis.symbol == pair) {
-      try {
-        ws.add(jsonEncode(_buildPayload(pair, analysis)));
-      } catch (_) {}
-    }
-  });
+  final sub = service.analysisStream.listen(
+    (MarketAnalysisResult analysis) {
+      if (analysis.symbol.toUpperCase() == pair) {
+        try {
+          ws.add(jsonEncode(_buildPayload(pair, analysis)));
+        } catch (_) {}
+      }
+    },
+    onError: (err) {
+      debugPrint("⚠ Analysis stream error: $err");
+    },
+  );
 
-  // Store client and subscription
   _subscriptions[ws] = sub;
   _clients.putIfAbsent(pair, () => []).add(ws);
 
-  // Heartbeat for dead connections
+  // Heartbeat to detect dead connections
   _startHeartbeat(ws);
 
-  // Listen for client messages (optional: ping/pong)
+  // Listen for client messages
   ws.listen(
     (msg) {
       if (msg == 'ping') ws.add('pong');
+      // Future: handle custom messages from client here
     },
     onDone: () => _cleanup(ws, pair),
     onError: (_) => _cleanup(ws, pair),
     cancelOnError: true,
   );
 
-  // 101 Switching Protocols is automatic
+  // 101 Switching Protocols handled by WebSocketTransformer
   return Response(statusCode: 101);
 }
 
 /// ================= Payload Builder =================
 Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
   final candles = analysis.candles;
-  final entry = candles.isNotEmpty ? candles.last.close : 0.0;
+  final entryPrice = candles.isNotEmpty ? candles.last.close : 0.0;
 
   return {
     "pair": pair,
@@ -85,7 +101,7 @@ Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
     "canBuy": analysis.canBuy ?? false,
     "canSell": analysis.canSell ?? false,
     "bias": (analysis.biasIsBuy ?? true) ? "BUY" : "SELL",
-    "entry": entry,
+    "entryPrice": entryPrice,
     "stopLoss": analysis.stopLoss ?? 0.0,
     "takeProfit": analysis.takeProfit ?? 0.0,
     "conditionsMet": analysis.conditionsMet ?? <String>[],
@@ -102,7 +118,7 @@ void _startHeartbeat(WebSocket ws) {
     try {
       ws.add('ping');
     } catch (_) {
-      _cleanupSocket(ws);
+      _cleanup(ws, _getPair(ws));
     }
   });
 }
@@ -125,4 +141,13 @@ void _cleanupSocket(WebSocket ws) {
   try {
     ws.close();
   } catch (_) {}
+}
+
+/// ================= Helper =================
+String _getPair(WebSocket ws) {
+  // Find the pair this ws belongs to
+  for (final entry in _clients.entries) {
+    if (entry.value.contains(ws)) return entry.key;
+  }
+  return 'unknown';
 }
