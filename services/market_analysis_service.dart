@@ -13,7 +13,7 @@ class MarketAnalysisService {
   factory MarketAnalysisService() => instance;
 
   // ================= STREAM =================
-  final _controller = StreamController<MarketAnalysisResult>.broadcast();
+  final StreamController<MarketAnalysisResult> _controller = StreamController.broadcast();
   Stream<MarketAnalysisResult> get analysisStream => _controller.stream;
 
   // ================= STORAGE =================
@@ -27,14 +27,15 @@ class MarketAnalysisService {
   int rsiPeriod = 14;
   double defaultRR = 2.0;
   int minCandles = 50;
-
   bool useATRforSLTP = true;
   int atrPeriod = 14;
 
   // ================= LIVE DATA =================
-  void startPair(String pair) async {
+  Future<void> startPair(String pair) async {
     final deriv = DerivService.instance;
     await deriv.subscribeCandles(pair);
+    
+    // Ensure analysisStream exists in DerivService
     deriv.analysisStream.listen((result) {}); // placeholder if needed
 
     // Listen for ticks
@@ -107,7 +108,9 @@ class MarketAnalysisService {
 
     final entry = m1.last.close;
     final sl = useATRforSLTP ? _atrSL(m1, bias) : _stopLoss(m1, bias);
-    final tp = useATRforSLTP ? _atrTP(entry, sl, bias, defaultRR) : _takeProfit(entry, sl, bias, defaultRR);
+    final tp = useATRforSLTP
+        ? _atrTP(entry, sl, bias, defaultRR)
+        : _takeProfit(entry, sl, bias, defaultRR);
 
     final sessionOk = _checkSession();
     final riskOk = _checkRR(entry, sl, tp);
@@ -158,134 +161,148 @@ class MarketAnalysisService {
     final bucket = (epoch ~/ (timeframe * 60)) * (timeframe * 60);
     if (list.isEmpty || list.last.epoch != bucket) {
       final open = list.isNotEmpty ? list.last.close : price;
-      list.add(Candle(epoch: bucket, open: open, close: price, high: max(open, price), low: min(open, price), volume: 1));
+      list.add(Candle(
+        epoch: bucket,
+        open: open,
+        close: price,
+        high: max(open, price),
+        low: min(open, price),
+        volume: 1,
+      ));
     } else {
       final last = list.last;
-      list[list.length-1] = Candle(epoch: last.epoch, open: last.open, close: price, high: max(last.high, price), low: min(last.low, price), volume: last.volume+1);
+      list[list.length - 1] = Candle(
+        epoch: last.epoch,
+        open: last.open,
+        close: price,
+        high: max(last.high, price),
+        low: min(last.low, price),
+        volume: last.volume + 1,
+      );
     }
   }
 
   double _calcRSI(List<Candle> c, int period) {
-    if (c.length < period+1) return 50;
-    double gain=0, loss=0;
-    for (int i=c.length-period;i<c.length;i++){
-      final d=c[i].close-c[i-1].close;
-      if(d>0) gain+=d;
-      if(d<0) loss-=d;
+    if (c.length < period + 1) return 50;
+    double gain = 0, loss = 0;
+    for (int i = c.length - period; i < c.length; i++) {
+      final d = c[i].close - c[i - 1].close;
+      if (d > 0) gain += d;
+      if (d < 0) loss -= d;
     }
-    if(gain+loss==0) return 50;
-    final rs = gain/max(loss,0.00001);
-    return 100-(100/(1+rs));
+    if (gain + loss == 0) return 50;
+    final rs = gain / max(loss, 0.00001);
+    return 100 - (100 / (1 + rs));
   }
 
-  List<double> _calcEMA(List<Candle> c,int p){
-    if(c.length<p) return [];
-    double sma=0;
-    for(int i=c.length-p;i<c.length;i++) sma+=c[i].close;
-    sma/=p;
-    final k=2/(p+1);
-    double ema=sma;
-    final out=[ema];
-    for(int i=c.length-p+1;i<c.length;i++){
-      ema=c[i].close*k + ema*(1-k);
+  List<double> _calcEMA(List<Candle> c, int p) {
+    if (c.length < p) return [];
+    double sma = 0;
+    for (int i = c.length - p; i < c.length; i++) sma += c[i].close;
+    sma /= p;
+    final k = 2 / (p + 1);
+    double ema = sma;
+    final out = [ema];
+    for (int i = c.length - p + 1; i < c.length; i++) {
+      ema = c[i].close * k + ema * (1 - k);
       out.add(ema);
     }
     return out;
   }
 
-  MarketBias _detectStructure(List<Candle> c){
-    if(c.length<10) return MarketBias.none;
-    final h1=c[c.length-1].high;
-    final h2=c[c.length-5].high;
-    final h3=c[c.length-10].high;
-    final l1=c[c.length-1].low;
-    final l2=c[c.length-5].low;
-    final l3=c[c.length-10].low;
-    if(h1>h2 && h2>h3 && l1>l2 && l2>l3) return MarketBias.buy;
-    if(l1<l2 && l2<l3 && h1<h2 && h2<h3) return MarketBias.sell;
+  MarketBias _detectStructure(List<Candle> c) {
+    if (c.length < 10) return MarketBias.none;
+    final h1 = c[c.length - 1].high;
+    final h2 = c[c.length - 5].high;
+    final h3 = c[c.length - 10].high;
+    final l1 = c[c.length - 1].low;
+    final l2 = c[c.length - 5].low;
+    final l3 = c[c.length - 10].low;
+    if (h1 > h2 && h2 > h3 && l1 > l2 && l2 > l3) return MarketBias.buy;
+    if (l1 < l2 && l2 < l3 && h1 < h2 && h2 < h3) return MarketBias.sell;
     return MarketBias.none;
   }
 
-  EntryConfirmation _confirmation(List<Candle> c, MarketBias bias){
-    if(c.length<2) return EntryConfirmation.none;
-    final last=c.last;
-    final prev=c[c.length-2];
-    final body=(last.close-last.open).abs();
-    final upperWick=last.high - max(last.close,last.open);
-    final lowerWick=min(last.close,last.open)-last.low;
-    final bullishEngulf=last.close>prev.high && last.close>last.open;
-    final bearishEngulf=last.close<prev.low && last.close<prev.open;
-    final bullishPin=lowerWick>body*2 && upperWick<body;
-    final bearishPin=upperWick>body*2 && lowerWick<body;
-    if(bias==MarketBias.buy && (bullishEngulf||bullishPin)) return EntryConfirmation.bullish;
-    if(bias==MarketBias.sell && (bearishEngulf||bearishPin)) return EntryConfirmation.bearish;
+  EntryConfirmation _confirmation(List<Candle> c, MarketBias bias) {
+    if (c.length < 2) return EntryConfirmation.none;
+    final last = c.last;
+    final prev = c[c.length - 2];
+    final body = (last.close - last.open).abs();
+    final upperWick = last.high - max(last.close, last.open);
+    final lowerWick = min(last.close, last.open) - last.low;
+    final bullishEngulf = last.close > prev.high && last.close > last.open;
+    final bearishEngulf = last.close < prev.low && last.close < prev.open;
+    final bullishPin = lowerWick > body * 2 && upperWick < body;
+    final bearishPin = upperWick > body * 2 && lowerWick < body;
+    if (bias == MarketBias.buy && (bullishEngulf || bullishPin)) return EntryConfirmation.bullish;
+    if (bias == MarketBias.sell && (bearishEngulf || bearishPin)) return EntryConfirmation.bearish;
     return EntryConfirmation.none;
   }
 
-  double _stopLoss(List<Candle> c, MarketBias bias){
-    if(c.length<2) return 0;
-    if(bias==MarketBias.buy) return c[c.length-2].low;
-    if(bias==MarketBias.sell) return c[c.length-2].high;
+  double _stopLoss(List<Candle> c, MarketBias bias) {
+    if (c.length < 2) return 0;
+    if (bias == MarketBias.buy) return c[c.length - 2].low;
+    if (bias == MarketBias.sell) return c[c.length - 2].high;
     return 0;
   }
 
-  double _atrSL(List<Candle> c, MarketBias bias){
-    if(c.length<atrPeriod+1) return _stopLoss(c,bias);
-    final atr=_calcATR(c,atrPeriod);
-    final entry=c.last.close;
-    return bias==MarketBias.buy?entry-atr:entry+atr;
+  double _atrSL(List<Candle> c, MarketBias bias) {
+    if (c.length < atrPeriod + 1) return _stopLoss(c, bias);
+    final atr = _calcATR(c, atrPeriod);
+    final entry = c.last.close;
+    return bias == MarketBias.buy ? entry - atr : entry + atr;
   }
 
-  double _atrTP(double entry,double sl,MarketBias bias,double rr){
-    final risk=(entry-sl).abs();
-    if(risk==0) return 0;
-    return bias==MarketBias.buy?entry+risk*rr:entry-risk*rr;
+  double _atrTP(double entry, double sl, MarketBias bias, double rr) {
+    final risk = (entry - sl).abs();
+    if (risk == 0) return 0;
+    return bias == MarketBias.buy ? entry + risk * rr : entry - risk * rr;
   }
 
-  double _calcATR(List<Candle> c,int period){
-    if(c.length<period+1) return 0;
-    double sum=0;
-    for(int i=c.length-period;i<c.length;i++){
-      final high=c[i].high;
-      final low=c[i].low;
-      final prev=c[i-1].close;
-      final tr1=high-low;
-      final tr2=(high-prev).abs();
-      final tr3=(low-prev).abs();
-      sum+=max(tr1,max(tr2,tr3));
+  double _calcATR(List<Candle> c, int period) {
+    if (c.length < period + 1) return 0;
+    double sum = 0;
+    for (int i = c.length - period; i < c.length; i++) {
+      final high = c[i].high;
+      final low = c[i].low;
+      final prev = c[i - 1].close;
+      final tr1 = high - low;
+      final tr2 = (high - prev).abs();
+      final tr3 = (low - prev).abs();
+      sum += max(tr1, max(tr2, tr3));
     }
-    return sum/period;
+    return sum / period;
   }
 
-  double _takeProfit(double entry,double sl,MarketBias bias,double rr){
-    final risk=(entry-sl).abs();
-    if(risk==0) return 0;
-    return bias==MarketBias.buy?entry+risk*rr:entry-risk*rr;
+  double _takeProfit(double entry, double sl, MarketBias bias, double rr) {
+    final risk = (entry - sl).abs();
+    if (risk == 0) return 0;
+    return bias == MarketBias.buy ? entry + risk * rr : entry - risk * rr;
   }
 
-  bool _checkRR(double entry,double sl,double tp){
-    if(sl==0||tp==0) return false;
-    final risk=(entry-sl).abs();
-    final reward=(tp-entry).abs();
-    if(risk==0) return false;
-    return reward/risk>=defaultRR;
+  bool _checkRR(double entry, double sl, double tp) {
+    if (sl == 0 || tp == 0) return false;
+    final risk = (entry - sl).abs();
+    final reward = (tp - entry).abs();
+    if (risk == 0) return false;
+    return reward / risk >= defaultRR;
   }
 
-  bool _checkSession(){
-    final now=DateTime.now().toUtc().add(const Duration(hours:3));
-    return now.hour>=8 && now.hour<=22;
+  bool _checkSession() {
+    final now = DateTime.now().toUtc().add(const Duration(hours: 3));
+    return now.hour >= 8 && now.hour <= 22;
   }
 
-  List<Candle> _sanitize(List<Candle> c){
-    final map=<int,Candle>{};
-    for(final e in c) map[e.epoch]=e;
-    return map.values.toList()..sort((a,b)=>a.epoch.compareTo(b.epoch));
+  List<Candle> _sanitize(List<Candle> c) {
+    final map = <int, Candle>{};
+    for (final e in c) map[e.epoch] = e;
+    return map.values.toList()..sort((a, b) => a.epoch.compareTo(b.epoch));
   }
 
-  String _normalize(String p){
-    p=p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
-    while(p.startsWith('FRXFRX')) p=p.substring(3);
-    if(!p.startsWith('FRX')) p='FRX$p';
+  String _normalize(String p) {
+    p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+    while (p.startsWith('FRXFRX')) p = p.substring(3);
+    if (!p.startsWith('FRX')) p = 'FRX$p';
     return p;
   }
 }

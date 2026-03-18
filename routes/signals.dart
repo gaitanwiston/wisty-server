@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:dart_frog/dart_frog.dart';
 import '../services/market_analysis_service.dart';
 
-final Map<String, WebSocketChannel> _clients = {};
+// Map ya connected clients (WebSocket)
+final Map<String, WebSocket> _clients = {};
 final Map<String, StreamSubscription> _subscriptions = {};
 
 Future<Response> onRequest(RequestContext context) async {
@@ -14,7 +16,8 @@ Future<Response> onRequest(RequestContext context) async {
     );
   }
 
-  final wsChannel = await WebSocketTransformer.upgrade(context.request);
+  // Upgrade HTTP request to WebSocket
+  final ws = await WebSocketTransformer.upgrade(context.request);
   final queryParams = context.request.uri.queryParameters;
   final pair = (queryParams['pair'] ?? 'FRXEURUSD').toUpperCase();
 
@@ -23,9 +26,9 @@ Future<Response> onRequest(RequestContext context) async {
   // Send current/latest analysis immediately
   final latest = service.latestFor(pair);
   if (latest != null) {
-    wsChannel.add(jsonEncode(_buildPayload(pair, latest)));
+    ws.add(jsonEncode(_buildPayload(pair, latest)));
   } else {
-    wsChannel.add(jsonEncode({
+    ws.add(jsonEncode({
       "pair": pair,
       "status": "waiting",
       "timestamp": DateTime.now().toIso8601String(),
@@ -35,16 +38,23 @@ Future<Response> onRequest(RequestContext context) async {
   // Subscribe to live analysis updates
   final sub = service.analysisStream.listen((analysis) {
     if (analysis.symbol == pair) {
-      wsChannel.add(jsonEncode(_buildPayload(pair, analysis)));
+      ws.add(jsonEncode(_buildPayload(pair, analysis)));
     }
   });
 
   // Cleanup on disconnect
-  wsChannel.done.then((_) {
+  ws.done.then((_) {
     sub.cancel();
+    _clients.remove(pair);
+    _subscriptions.remove(pair);
   });
 
-  return Response(statusCode: 101); // Switching Protocols
+  // Store client and subscription
+  _clients[pair] = ws;
+  _subscriptions[pair] = sub;
+
+  // Return 101 Switching Protocols is handled automatically by Dart WebSocket upgrade
+  return Response(statusCode: 101);
 }
 
 /// Build JSON payload from MarketAnalysisResult
