@@ -1,22 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:shelf/shelf.dart';
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import '../models/market_analysis_result.dart';
 import '../services/market_analysis_service.dart';
 
-/// ================= WebSocket Server =================
-// Multiple clients per pair
+/// ================= WebSocket Server State =================
 final Map<String, List<WebSocket>> _clients = {};
-// Subscriptions per WebSocket
 final Map<WebSocket, StreamSubscription> _subscriptions = {};
-// Heartbeat timers
 final Map<WebSocket, Timer> _heartbeats = {};
 
-/// ================= WebSocket Handler =================
-Handler websocketHandler({String defaultPair = 'FRXEURUSD'}) {
+/// ================= Route Entry Point =================
+Handler onRequest(Request request) {
+  // use shelf_web_socket handler
   return webSocketHandler((WebSocket ws) {
-    final pair = defaultPair.toUpperCase();
+    final pair = 'FRXEURUSD';
     final service = MarketAnalysisService.instance;
 
     // Send latest analysis immediately
