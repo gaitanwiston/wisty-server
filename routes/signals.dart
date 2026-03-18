@@ -1,85 +1,69 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:dart_frog/dart_frog.dart';
 import '../services/market_analysis_service.dart';
 
+final Map<String, WebSocketChannel> _clients = {};
+final Map<String, StreamSubscription> _subscriptions = {};
+
 Future<Response> onRequest(RequestContext context) async {
-  final pair =
-      context.request.uri.queryParameters['pair']?.toUpperCase() ?? 'FRXEURUSD';
-
-  try {
-    final service = MarketAnalysisService.instance;
-
-    // pata analysis iliyopo tayari (non-blocking)
-    final analysis = service.latestFor(pair);
-
-    // kama bado haijawa ready
-    if (analysis == null) {
-      return Response.json(
-        body: {
-          "pair": pair,
-          "status": "waiting",
-          "canBuy": false,
-          "canSell": false,
-          "entry": 0.0,
-          "stopLoss": 0.0,
-          "takeProfit": 0.0,
-          "conditionsMet": [],
-          "failedConditions": [],
-          "timestamp": DateTime.now().toIso8601String(),
-        },
-      );
-    }
-
-    // ---------- SAFE DATA ----------
-    final candles = analysis.candles;
-
-    final entry = candles.isNotEmpty ? candles.last.close : 0.0;
-
-    final canBuy = analysis.canBuy ?? false;
-    final canSell = analysis.canSell ?? false;
-
-    final biasIsBuy = analysis.biasIsBuy ?? true;
-
-    final stopLoss = analysis.stopLoss ?? 0.0;
-    final takeProfit = analysis.takeProfit ?? 0.0;
-
-    final conditionsMet = analysis.conditionsMet ?? <String>[];
-    final failedConditions = analysis.reasonsFailed ?? <String>[];
-
-    // ---------- RESPONSE ----------
-    final response = {
-      "pair": pair,
-      "status": "ready",
-
-      "canBuy": canBuy,
-      "canSell": canSell,
-
-      "bias": biasIsBuy ? "BUY" : "SELL",
-
-      "entry": entry,
-      "stopLoss": stopLoss,
-      "takeProfit": takeProfit,
-
-      "conditionsMet": conditionsMet,
-      "failedConditions": failedConditions,
-
-      "candleCount": candles.length,
-
-      "timestamp": DateTime.now().toIso8601String(),
-    };
-
-    return Response.json(body: response);
-  } catch (e, st) {
-    print("⚠ SIGNALS ERROR [$pair]: $e");
-
+  if (!WebSocketTransformer.isUpgradeRequest(context.request)) {
     return Response.json(
-      statusCode: 500,
-      body: {
-        "pair": pair,
-        "status": "error",
-        "message": e.toString(),
-        "stack": st.toString(),
-        "timestamp": DateTime.now().toIso8601String(),
-      },
+      statusCode: 400,
+      body: {"error": "WebSocket upgrade required"},
     );
   }
+
+  final wsChannel = await WebSocketTransformer.upgrade(context.request);
+  final queryParams = context.request.uri.queryParameters;
+  final pair = (queryParams['pair'] ?? 'FRXEURUSD').toUpperCase();
+
+  final service = MarketAnalysisService.instance;
+
+  // Send current/latest analysis immediately
+  final latest = service.latestFor(pair);
+  if (latest != null) {
+    wsChannel.add(jsonEncode(_buildPayload(pair, latest)));
+  } else {
+    wsChannel.add(jsonEncode({
+      "pair": pair,
+      "status": "waiting",
+      "timestamp": DateTime.now().toIso8601String(),
+    }));
+  }
+
+  // Subscribe to live analysis updates
+  final sub = service.analysisStream.listen((analysis) {
+    if (analysis.symbol == pair) {
+      wsChannel.add(jsonEncode(_buildPayload(pair, analysis)));
+    }
+  });
+
+  // Cleanup on disconnect
+  wsChannel.done.then((_) {
+    sub.cancel();
+  });
+
+  return Response(statusCode: 101); // Switching Protocols
+}
+
+/// Build JSON payload from MarketAnalysisResult
+Map<String, dynamic> _buildPayload(String pair, dynamic analysis) {
+  final candles = analysis.candles;
+  final entry = candles.isNotEmpty ? candles.last.close : 0.0;
+
+  return {
+    "pair": pair,
+    "status": "ready",
+    "canBuy": analysis.canBuy ?? false,
+    "canSell": analysis.canSell ?? false,
+    "bias": (analysis.biasIsBuy ?? true) ? "BUY" : "SELL",
+    "entry": entry,
+    "stopLoss": analysis.stopLoss ?? 0.0,
+    "takeProfit": analysis.takeProfit ?? 0.0,
+    "conditionsMet": analysis.conditionsMet ?? <String>[],
+    "failedConditions": analysis.reasonsFailed ?? <String>[],
+    "candleCount": candles.length,
+    "timestamp": DateTime.now().toIso8601String(),
+  };
 }
