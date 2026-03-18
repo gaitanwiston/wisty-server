@@ -15,16 +15,18 @@ final Map<WebSocket, Timer> _heartbeats = {};
 
 /// ================= WebSocket Handler =================
 Future<Response> onRequest(RequestContext context) async {
-  // Hijack HttpRequest from Dart Frog to work with WebSocketTransformer
-  final hijack = context.request.hijack();
-  if (hijack == null) {
+  // Check WebSocket upgrade header
+  if (!context.request.headers.containsKey('upgrade')) {
     return Response.json(
       statusCode: 400,
       body: {"error": "WebSocket upgrade required"},
     );
   }
 
-  final ws = await WebSocketTransformer.upgrade(hijack);
+  // Convert Dart Frog Request to HttpRequest for WebSocketTransformer
+  final httpRequest = context.request as HttpRequest;
+  final ws = await WebSocketTransformer.upgrade(httpRequest);
+
   final pair = (context.request.uri.queryParameters['pair'] ?? 'FRXEURUSD').toUpperCase();
   final service = MarketAnalysisService.instance;
 
@@ -68,6 +70,7 @@ Future<Response> onRequest(RequestContext context) async {
     cancelOnError: true,
   );
 
+  // 101 Switching Protocols is automatic
   return Response(statusCode: 101);
 }
 
