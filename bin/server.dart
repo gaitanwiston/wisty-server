@@ -1,11 +1,15 @@
 import 'dart:io';
 import 'package:dart_frog/dart_frog.dart';
-import 'package:wisty_server/router.dart';
+import '../routes/signals.dart' as signals;
 
 Future<void> main() async {
-  // Pipeline ya middleware + router
+  // Manual Router
+  final router = Router()
+    ..all('/signals', signals.onRequest);
+
+  // Pipeline ya middleware (remove logRequests kama hutaki shelf logs)
   final handler = Pipeline()
-      .addMiddleware(logRequests()) // logs requests to console
+      //.addMiddleware(logRequests()) // uncomment ikiwa una shelf logs
       .addHandler(router);
 
   // Listen on all interfaces (0.0.0.0) na PORT env var au default 8080
