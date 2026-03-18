@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:dart_frog/dart_frog.dart';
 import '../models/market_analysis_result.dart';
 import '../services/market_analysis_service.dart';
+import 'package:shelf_web_socket/shelf_web_socket.dart';
 
 /// ================= WebSocket Server =================
 // Multiple clients per pair
@@ -14,78 +15,42 @@ final Map<WebSocket, StreamSubscription> _subscriptions = {};
 final Map<WebSocket, Timer> _heartbeats = {};
 
 /// ================= WebSocket Handler =================
-Future<Response> onRequest(RequestContext context) async {
-  final httpRequest = context.requestContext.request; // Actual HttpRequest
+Handler websocketHandler() {
+  return webSocketHandler((WebSocket ws) {
+    // Query params are not available directly, so default to 'FRXEURUSD'
+    String pair = 'FRXEURUSD';
+    final service = MarketAnalysisService.instance;
 
-  // Ensure WebSocket upgrade
-  if (!WebSocketTransformer.isUpgradeRequest(httpRequest)) {
-    return Response.json(
-      statusCode: 400,
-      body: {"error": "WebSocket upgrade required"},
-    );
-  }
+    // Send latest analysis immediately
+    final latest = service.latestFor(pair);
+    if (latest != null) {
+      try {
+        ws.add(jsonEncode(_buildPayload(pair, latest)));
+      } catch (_) {}
+    }
 
-  late WebSocket ws;
-  try {
-    ws = await WebSocketTransformer.upgrade(httpRequest);
-  } catch (e) {
-    return Response.json(
-      statusCode: 500,
-      body: {"error": "WebSocket upgrade failed: $e"},
-    );
-  }
-
-  final pair =
-      (context.request.uri.queryParameters['pair'] ?? 'FRXEURUSD').toUpperCase();
-  final service = MarketAnalysisService.instance;
-
-  // Send latest analysis immediately
-  final latest = service.latestFor(pair);
-  if (latest != null) {
-    try {
-      ws.add(jsonEncode(_buildPayload(pair, latest)));
-    } catch (_) {}
-  } else {
-    ws.add(jsonEncode({
-      "pair": pair,
-      "status": "waiting",
-      "timestamp": DateTime.now().toUtc().toIso8601String(),
-    }));
-  }
-
-  // Subscribe to live analysis updates
-  final sub = service.analysisStream.listen(
-    (MarketAnalysisResult analysis) {
+    // Subscribe to live analysis
+    final sub = service.analysisStream.listen((MarketAnalysisResult analysis) {
       if (analysis.symbol.toUpperCase() == pair) {
         try {
           ws.add(jsonEncode(_buildPayload(pair, analysis)));
         } catch (_) {}
       }
-    },
-    onError: (err) {
+    }, onError: (err) {
       print("⚠ Analysis stream error: $err");
-    },
-  );
+    });
 
-  _subscriptions[ws] = sub;
-  _clients.putIfAbsent(pair, () => []).add(ws);
+    _subscriptions[ws] = sub;
+    _clients.putIfAbsent(pair, () => []).add(ws);
 
-  // Heartbeat to detect dead connections
-  _startHeartbeat(ws);
+    // Heartbeat
+    _startHeartbeat(ws);
 
-  // Listen for client messages
-  ws.listen(
-    (msg) {
+    // Listen for client messages
+    ws.listen((msg) {
       if (msg == 'ping') ws.add('pong');
-      // TODO: handle custom messages from client here
-    },
-    onDone: () => _cleanup(ws, pair),
-    onError: (_) => _cleanup(ws, pair),
-    cancelOnError: true,
-  );
-
-  // 101 Switching Protocols handled by WebSocketTransformer
-  return Response(statusCode: 101);
+    }, onDone: () => _cleanup(ws, pair), onError: (_) => _cleanup(ws, pair));
+  });
 }
 
 /// ================= Payload Builder =================
@@ -132,10 +97,6 @@ void _cleanup(WebSocket ws, String pair) {
   _clients[pair]?.remove(ws);
   if (_clients[pair]?.isEmpty ?? false) _clients.remove(pair);
 
-  _cleanupSocket(ws);
-}
-
-void _cleanupSocket(WebSocket ws) {
   try {
     ws.close();
   } catch (_) {}
