@@ -35,11 +35,6 @@ class MarketAnalysisService {
     final deriv = DerivService.instance;
     await deriv.subscribeCandles(pair);
 
-    // Listen to DerivService analysisStream
-    deriv.analysisStream.listen((result) {
-      // placeholder, can be used for extra logic if needed
-    });
-
     Timer.periodic(const Duration(seconds: 1), (_) async {
       final candles = await deriv.getCandles(pair, timeframe: 1);
       if (candles.length >= minCandles) _processPair(pair, candles);
@@ -168,7 +163,14 @@ class MarketAnalysisService {
       list.add(Candle(epoch: bucket, open: open, close: price, high: max(open, price), low: min(open, price), volume: 1));
     } else {
       final last = list.last;
-      list[list.length - 1] = Candle(epoch: last.epoch, open: last.open, close: price, high: max(last.high, price), low: min(last.low, price), volume: last.volume + 1);
+      list[list.length - 1] = Candle(
+        epoch: last.epoch,
+        open: last.open,
+        close: price,
+        high: max(last.high, price),
+        low: min(last.low, price),
+        volume: last.volume + 1,
+      );
     }
   }
 
@@ -264,11 +266,7 @@ class MarketAnalysisService {
     return sum / period;
   }
 
-  double _takeProfit(double entry, double sl, MarketBias bias, double rr) {
-    final risk = (entry - sl).abs();
-    if (risk == 0) return 0;
-    return bias == MarketBias.buy ? entry + risk * rr : entry - risk * rr;
-  }
+  double _takeProfit(double entry, double sl, MarketBias bias, double rr) => _atrTP(entry, sl, bias, rr);
 
   bool _checkRR(double entry, double sl, double tp) {
     if (sl == 0 || tp == 0) return false;
@@ -281,12 +279,6 @@ class MarketAnalysisService {
   bool _checkSession() {
     final now = DateTime.now().toUtc().add(const Duration(hours: 3));
     return now.hour >= 8 && now.hour <= 22;
-  }
-
-  List<Candle> _sanitize(List<Candle> c) {
-    final map = <int, Candle>{};
-    for (final e in c) map[e.epoch] = e;
-    return map.values.toList()..sort((a, b) => a.epoch.compareTo(b.epoch));
   }
 
   String _normalize(String p) {

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:dart_frog/dart_frog.dart';
+import '../models/market_analysis_result.dart';
 import '../services/market_analysis_service.dart';
 
 /// ================= WebSocket Server =================
@@ -14,31 +15,31 @@ final Map<WebSocket, Timer> _heartbeats = {};
 
 /// ================= WebSocket Handler =================
 Future<Response> onRequest(RequestContext context) async {
-  if (!WebSocketTransformer.isUpgradeRequest(context.request)) {
+  // Hijack HttpRequest from Dart Frog to work with WebSocketTransformer
+  final hijack = context.request.hijack();
+  if (hijack == null) {
     return Response.json(
       statusCode: 400,
       body: {"error": "WebSocket upgrade required"},
     );
   }
 
-  final ws = await WebSocketTransformer.upgrade(context.request);
-  final queryParams = context.request.uri.queryParameters;
-  final pair = (queryParams['pair'] ?? 'FRXEURUSD').toUpperCase();
-
+  final ws = await WebSocketTransformer.upgrade(hijack);
+  final pair = (context.request.uri.queryParameters['pair'] ?? 'FRXEURUSD').toUpperCase();
   final service = MarketAnalysisService.instance;
 
-  // Send current/latest analysis immediately
+  // Send latest analysis immediately
   final latest = service.latestFor(pair);
   try {
-    if (latest != null) {
-      ws.add(jsonEncode(_buildPayload(pair, latest)));
-    } else {
-      ws.add(jsonEncode({
-        "pair": pair,
-        "status": "waiting",
-        "timestamp": DateTime.now().toUtc().toIso8601String(),
-      }));
-    }
+    ws.add(jsonEncode(
+      latest != null
+          ? _buildPayload(pair, latest)
+          : {
+              "pair": pair,
+              "status": "waiting",
+              "timestamp": DateTime.now().toUtc().toIso8601String(),
+            },
+    ));
   } catch (_) {}
 
   // Subscribe to live analysis updates
@@ -54,15 +55,13 @@ Future<Response> onRequest(RequestContext context) async {
   _subscriptions[ws] = sub;
   _clients.putIfAbsent(pair, () => []).add(ws);
 
-  // Setup heartbeat to detect dead connections
+  // Heartbeat for dead connections
   _startHeartbeat(ws);
 
-  // Listen for client messages (optional, e.g., for pings or commands)
+  // Listen for client messages (optional: ping/pong)
   ws.listen(
     (msg) {
-      if (msg == 'ping') {
-        ws.add('pong');
-      }
+      if (msg == 'ping') ws.add('pong');
     },
     onDone: () => _cleanup(ws, pair),
     onError: (_) => _cleanup(ws, pair),
@@ -80,14 +79,14 @@ Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
   return {
     "pair": pair,
     "status": "ready",
-    "canBuy": analysis.canBuy,
-    "canSell": analysis.canSell,
-    "bias": (analysis.biasIsBuy) ? "BUY" : "SELL",
+    "canBuy": analysis.canBuy ?? false,
+    "canSell": analysis.canSell ?? false,
+    "bias": (analysis.biasIsBuy ?? true) ? "BUY" : "SELL",
     "entry": entry,
-    "stopLoss": analysis.stopLoss,
-    "takeProfit": analysis.takeProfit,
-    "conditionsMet": analysis.conditionsMet,
-    "failedConditions": analysis.reasonsFailed,
+    "stopLoss": analysis.stopLoss ?? 0.0,
+    "takeProfit": analysis.takeProfit ?? 0.0,
+    "conditionsMet": analysis.conditionsMet ?? <String>[],
+    "failedConditions": analysis.reasonsFailed ?? <String>[],
     "candleCount": candles.length,
     "timestamp": DateTime.now().toUtc().toIso8601String(),
   };
@@ -95,15 +94,11 @@ Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
 
 /// ================= Heartbeat =================
 void _startHeartbeat(WebSocket ws) {
-  // cancel old timer if exists
   _heartbeats[ws]?.cancel();
-
-  // send ping every 15 seconds
   _heartbeats[ws] = Timer.periodic(const Duration(seconds: 15), (_) {
     try {
       ws.add('ping');
     } catch (_) {
-      // if sending fails, cleanup
       _cleanupSocket(ws);
     }
   });
@@ -118,9 +113,7 @@ void _cleanup(WebSocket ws, String pair) {
   _heartbeats.remove(ws);
 
   _clients[pair]?.remove(ws);
-  if (_clients[pair]?.isEmpty ?? false) {
-    _clients.remove(pair);
-  }
+  if (_clients[pair]?.isEmpty ?? false) _clients.remove(pair);
 
   _cleanupSocket(ws);
 }
