@@ -1,10 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:dart_frog/dart_frog.dart';
+import 'package:shelf_web_socket/shelf_web_socket.dart';
 import '../models/market_analysis_result.dart';
 import '../services/market_analysis_service.dart';
-import 'package:shelf_web_socket/shelf_web_socket.dart';
 
 /// ================= WebSocket Server =================
 // Multiple clients per pair
@@ -15,10 +14,9 @@ final Map<WebSocket, StreamSubscription> _subscriptions = {};
 final Map<WebSocket, Timer> _heartbeats = {};
 
 /// ================= WebSocket Handler =================
-Handler websocketHandler() {
+Handler websocketHandler({String defaultPair = 'FRXEURUSD'}) {
   return webSocketHandler((WebSocket ws) {
-    // Query params are not available directly, so default to 'FRXEURUSD'
-    String pair = 'FRXEURUSD';
+    final pair = defaultPair.toUpperCase();
     final service = MarketAnalysisService.instance;
 
     // Send latest analysis immediately
@@ -27,18 +25,27 @@ Handler websocketHandler() {
       try {
         ws.add(jsonEncode(_buildPayload(pair, latest)));
       } catch (_) {}
+    } else {
+      ws.add(jsonEncode({
+        "pair": pair,
+        "status": "waiting",
+        "timestamp": DateTime.now().toUtc().toIso8601String(),
+      }));
     }
 
     // Subscribe to live analysis
-    final sub = service.analysisStream.listen((MarketAnalysisResult analysis) {
-      if (analysis.symbol.toUpperCase() == pair) {
-        try {
-          ws.add(jsonEncode(_buildPayload(pair, analysis)));
-        } catch (_) {}
-      }
-    }, onError: (err) {
-      print("⚠ Analysis stream error: $err");
-    });
+    final sub = service.analysisStream.listen(
+      (MarketAnalysisResult analysis) {
+        if (analysis.symbol.toUpperCase() == pair) {
+          try {
+            ws.add(jsonEncode(_buildPayload(pair, analysis)));
+          } catch (_) {}
+        }
+      },
+      onError: (err) {
+        print("⚠ Analysis stream error: $err");
+      },
+    );
 
     _subscriptions[ws] = sub;
     _clients.putIfAbsent(pair, () => []).add(ws);
@@ -47,9 +54,13 @@ Handler websocketHandler() {
     _startHeartbeat(ws);
 
     // Listen for client messages
-    ws.listen((msg) {
-      if (msg == 'ping') ws.add('pong');
-    }, onDone: () => _cleanup(ws, pair), onError: (_) => _cleanup(ws, pair));
+    ws.listen(
+      (msg) {
+        if (msg == 'ping') ws.add('pong');
+      },
+      onDone: () => _cleanup(ws, pair),
+      onError: (_) => _cleanup(ws, pair),
+    );
   });
 }
 
