@@ -34,11 +34,12 @@ class MarketAnalysisService {
   Future<void> startPair(String pair) async {
     final deriv = DerivService.instance;
     await deriv.subscribeCandles(pair);
-    
-    // Ensure analysisStream exists in DerivService
-    deriv.analysisStream.listen((result) {}); // placeholder if needed
 
-    // Listen for ticks
+    // Listen to DerivService analysisStream
+    deriv.analysisStream.listen((result) {
+      // placeholder, can be used for extra logic if needed
+    });
+
     Timer.periodic(const Duration(seconds: 1), (_) async {
       final candles = await deriv.getCandles(pair, timeframe: 1);
       if (candles.length >= minCandles) _processPair(pair, candles);
@@ -148,6 +149,9 @@ class MarketAnalysisService {
     );
   }
 
+  // ================= PUBLIC ATR =================
+  double calcATR(List<Candle> c, int period) => _calcATR(c, period);
+
   // ================= HELPERS =================
   List<Candle> _aggregate(List<Candle> c, {required int timeframeMinutes}) {
     final out = <Candle>[];
@@ -161,24 +165,10 @@ class MarketAnalysisService {
     final bucket = (epoch ~/ (timeframe * 60)) * (timeframe * 60);
     if (list.isEmpty || list.last.epoch != bucket) {
       final open = list.isNotEmpty ? list.last.close : price;
-      list.add(Candle(
-        epoch: bucket,
-        open: open,
-        close: price,
-        high: max(open, price),
-        low: min(open, price),
-        volume: 1,
-      ));
+      list.add(Candle(epoch: bucket, open: open, close: price, high: max(open, price), low: min(open, price), volume: 1));
     } else {
       final last = list.last;
-      list[list.length - 1] = Candle(
-        epoch: last.epoch,
-        open: last.open,
-        close: price,
-        high: max(last.high, price),
-        low: min(last.low, price),
-        volume: last.volume + 1,
-      );
+      list[list.length - 1] = Candle(epoch: last.epoch, open: last.open, close: price, high: max(last.high, price), low: min(last.low, price), volume: last.volume + 1);
     }
   }
 

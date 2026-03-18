@@ -46,7 +46,7 @@ class DerivService {
   DerivService._internal();
 
   WebSocketChannel? _channel;
-  Stream<dynamic>? _wsStream;
+  late Stream<dynamic> _wsStream;
   StreamSubscription? _wsSub;
   bool _authorized = false;
   bool _connected = false;
@@ -69,7 +69,7 @@ class DerivService {
 
     _wsStream = _channel!.stream.asBroadcastStream();
 
-    _wsSub = _wsStream!.listen((msg) {
+    _wsSub = _wsStream.listen((msg) {
       try {
         final data = jsonDecode(msg);
         if (data is Map<String, dynamic>) _handleMessage(data);
@@ -116,10 +116,9 @@ class DerivService {
   }
 
   /// ================= CANDLES =================
-  Future<void> subscribeCandles(String pair, {int timeframeMinutes = 1, int historyCount = 300}) async {
+  Future<void> subscribeCandles(String pair, {int timeframeMinutes = 1}) async {
     if (!_connected) await connect();
     final norm = _normalize(pair);
-
     if (!_subscribedTicks.contains(norm)) {
       _subscribedTicks.add(norm);
       final actual = _symbolMap[norm] ?? norm;
@@ -132,23 +131,16 @@ class DerivService {
     return _candles[_normalize(pair)] ?? [];
   }
 
-  /// ================= NEW WRAPPERS =================
+  /// ================= WRAPPERS =================
   Future<List<Pair>> getMarketPairs() async {
     if (!_connected) await connect();
-    final res = <Pair>[];
-    _symbolMap.forEach((norm, actual) {
-      res.add(Pair(symbol: norm, displayName: actual, type: "forex"));
-    });
-    return res;
+    return _symbolMap.entries.map((e) => Pair(symbol: e.key, displayName: e.value, type: "forex")).toList();
   }
 
   Future<double> getLastPrice(String pair) async {
     final norm = _normalize(pair);
     final list = _candles[norm];
-    if (list != null && list.isNotEmpty) {
-      return list.last.close;
-    }
-    // fallback: return 0.0 if no ticks yet
+    if (list != null && list.isNotEmpty) return list.last.close;
     return 0.0;
   }
 
@@ -157,22 +149,14 @@ class DerivService {
     final symbol = _normalize(pair);
     final actual = _symbolMap[symbol] ?? symbol;
 
-    _send({
-      "proposal": 1,
-      "amount": stake,
-      "basis": "stake",
-      "contract_type": isBuy ? "MULTUP" : "MULTDOWN",
-      "currency": "USD",
-      "symbol": actual,
-      "multiplier": 50,
-    });
+    _send({"proposal": 1, "amount": stake, "basis": "stake", "contract_type": isBuy ? "MULTUP" : "MULTDOWN", "currency": "USD", "symbol": actual, "multiplier": 50});
 
-    final res = await _sendAndWait("proposal", {});
+    final res = await _sendAndWait("proposal", {}, timeoutSeconds: 5);
     final proposalId = res['proposal']?['id'];
     if (proposalId == null) return null;
 
     _send({"buy": proposalId, "price": stake});
-    final buyRes = await _sendAndWait("buy", {});
+    final buyRes = await _sendAndWait("buy", {}, timeoutSeconds: 5);
     final contractId = buyRes['buy']?['contract_id']?.toString();
     if (contractId != null) openTrades[contractId] = {"pair": symbol, "stake": stake, "direction": isBuy ? "BUY" : "SELL"};
     return contractId;
@@ -184,8 +168,8 @@ class DerivService {
     openTrades.remove(contractId);
   }
 
-  void subscribeContract(String contractId, void Function(Map<String,dynamic>) callback) {
-    final ctrl = _contractStreams.putIfAbsent(contractId, () => StreamController<Map<String,dynamic>>.broadcast());
+  void subscribeContract(String contractId, void Function(Map<String, dynamic>) callback) {
+    final ctrl = _contractStreams.putIfAbsent(contractId, () => StreamController<Map<String, dynamic>>.broadcast());
     ctrl.stream.listen(callback);
   }
 
@@ -193,7 +177,7 @@ class DerivService {
     await connect();
     final completer = Completer<double>();
     late StreamSubscription sub;
-    sub = _wsStream!.listen((msg) {
+    sub = _wsStream.listen((msg) {
       final data = jsonDecode(msg);
       if (data['msg_type'] == 'balance') {
         final bal = (data['balance']['balance'] ?? 0).toDouble();
@@ -220,39 +204,49 @@ class DerivService {
       list.add(Candle(epoch: bucket, open: open, close: price, high: max(open, price), low: min(open, price), volume: 1));
     } else {
       final last = list.last;
-      list[list.length-1] = Candle(
+      list[list.length - 1] = Candle(
         epoch: last.epoch,
         open: last.open,
         close: price,
         high: max(last.high, price),
         low: min(last.low, price),
-        volume: last.volume+1,
+        volume: last.volume + 1,
       );
     }
   }
 
-  void _send(Map<String,dynamic> data) {
+  void _send(Map<String, dynamic> data) {
     _channel?.sink.add(jsonEncode(data));
   }
 
-  Future<Map<String,dynamic>> _sendAndWait(String type, Map<String,dynamic> data) async {
-    final completer = Completer<Map<String,dynamic>>();
+  Future<Map<String, dynamic>> _sendAndWait(String type, Map<String, dynamic> data, {int timeoutSeconds = 10}) async {
+    final completer = Completer<Map<String, dynamic>>();
     late StreamSubscription sub;
-    sub = _wsStream!.listen((msg) {
+    sub = _wsStream.listen((msg) {
       final decoded = jsonDecode(msg);
-      if (decoded is Map<String,dynamic> && decoded['msg_type'] == type) {
+      if (decoded is Map<String, dynamic> && decoded['msg_type'] == type && !completer.isCompleted) {
         completer.complete(decoded);
         sub.cancel();
       }
     });
+
     _send(data);
+
+    // Timeout safety
+    Future.delayed(Duration(seconds: timeoutSeconds), () {
+      if (!completer.isCompleted) {
+        completer.complete({});
+        sub.cancel();
+      }
+    });
+
     return completer.future;
   }
 
   void _scheduleReconnect() async {
     _connected = false;
     _authorized = false;
-    _channel?.sink.close();
+    await _channel?.sink.close();
     await Future.delayed(const Duration(seconds: 2));
     await connect();
   }
