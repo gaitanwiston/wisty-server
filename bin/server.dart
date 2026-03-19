@@ -1,4 +1,8 @@
-import 'dart:io';
+import 'package:wisty_server/routes/trades.dart' as trades;
+import 'package:wisty_server/routes/pairs.dart' as pairs;
+import 'package:wisty_server/routes/last_prices.dart' as last_prices;
+import 'package:wisty_server/routes/candles.dart' as candles;
+import 'package:wisty_server/routes/balance.dart' as balance;
 import 'package:dart_frog/dart_frog.dart';
 
 // ---------------- HTTP Route Handlers ----------------

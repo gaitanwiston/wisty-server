@@ -9,7 +9,6 @@ environment:
 
 dependencies:
   # Dart Frog core (HTTP API + routing)
-  dart_frog: ^1.2.6
 
   # WebSocket client library (for Deriv API)
   web_socket_channel: ^3.0.3
@@ -19,6 +18,7 @@ dependencies:
 
   # Optional HTTP client
   http: ^1.1.0
+  dart_frog: ^1.2.6
 
 dev_dependencies:
   # Lint rules for Dart Frog projects
