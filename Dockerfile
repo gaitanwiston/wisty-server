@@ -1,4 +1,4 @@
-# ---------- Build stage ----------
+# ---------- Build Stage ----------
 FROM dart:stable AS build
 
 WORKDIR /app
@@ -7,26 +7,31 @@ WORKDIR /app
 RUN dart pub global activate dart_frog_cli
 ENV PATH="$PATH:/root/.pub-cache/bin"
 
-# Copy pubspec and fetch dependencies
+# Copy pubspec files first (cache-friendly)
 COPY pubspec.* ./
+
+# Get dependencies
 RUN dart pub get
 
-# Copy source code
+# Copy all source code
 COPY . .
 
-# Optional: build Dart Frog project (cache AOT)
+# Build Dart Frog HTTP API (generates build/ folder)
 RUN dart_frog build
 
-# ---------- Runtime stage ----------
+# ---------- Runtime Stage ----------
 FROM dart:stable AS runtime
 
 WORKDIR /app
 
-# Copy entire app from build stage
-COPY --from=build /app ./
+# Copy build output for Dart Frog API
+COPY --from=build /app/build ./build
 
-# Expose port for HTTP + WebSocket server
+# Copy server entrypoint
+COPY --from=build /app/bin/server.dart ./bin/server.dart
+
+# Expose ports
 EXPOSE 8080
 
-# Run Dart Frog server (HTTP + /signals WebSocket)
+# Run Dart Frog server
 CMD ["dart", "run", "bin/server.dart"]
