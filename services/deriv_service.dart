@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'dart:io';
 
 /// ================= CONFIG =================
 const String derivToken = "5Q0tS24UGTwKvDX";
