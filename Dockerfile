@@ -18,7 +18,7 @@ COPY . .
 RUN dart_frog build
 
 # ---------- Build standalone WebSocket signals server ----------
-RUN dart compile exe bin/signals_server.dart -o signals_server
+RUN dart compile exe bin/server.dart -o server
 
 # ---------- Runtime stage ----------
 FROM dart:stable AS runtime
