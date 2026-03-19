@@ -69,12 +69,16 @@ class DerivService {
 
     _wsStream = _channel!.stream.asBroadcastStream();
 
-    _wsSub = _wsStream.listen((msg) {
-      try {
-        final data = jsonDecode(msg);
-        if (data is Map<String, dynamic>) _handleMessage(data);
-      } catch (_) {}
-    }, onError: (_) => _scheduleReconnect(), onDone: _scheduleReconnect);
+    _wsSub = _wsStream.listen(
+      (msg) {
+        try {
+          final data = jsonDecode(msg);
+          if (data is Map<String, dynamic>) _handleMessage(data);
+        } catch (_) {}
+      },
+      onError: (_) => _scheduleReconnect(),
+      onDone: _scheduleReconnect,
+    );
 
     _send({"authorize": t});
   }
@@ -112,6 +116,9 @@ class DerivService {
           });
         }
         break;
+      case 'balance':
+        // handled in getBalance
+        break;
     }
   }
 
@@ -134,7 +141,9 @@ class DerivService {
   /// ================= WRAPPERS =================
   Future<List<Pair>> getMarketPairs() async {
     if (!_connected) await connect();
-    return _symbolMap.entries.map((e) => Pair(symbol: e.key, displayName: e.value, type: "forex")).toList();
+    return _symbolMap.entries
+        .map((e) => Pair(symbol: e.key, displayName: e.value, type: "forex"))
+        .toList();
   }
 
   Future<double> getLastPrice(String pair) async {
@@ -149,7 +158,15 @@ class DerivService {
     final symbol = _normalize(pair);
     final actual = _symbolMap[symbol] ?? symbol;
 
-    _send({"proposal": 1, "amount": stake, "basis": "stake", "contract_type": isBuy ? "MULTUP" : "MULTDOWN", "currency": "USD", "symbol": actual, "multiplier": 50});
+    _send({
+      "proposal": 1,
+      "amount": stake,
+      "basis": "stake",
+      "contract_type": isBuy ? "MULTUP" : "MULTDOWN",
+      "currency": "USD",
+      "symbol": actual,
+      "multiplier": 50
+    });
 
     final res = await _sendAndWait("proposal", {}, timeoutSeconds: 5);
     final proposalId = res['proposal']?['id'];
@@ -173,19 +190,33 @@ class DerivService {
     ctrl.stream.listen(callback);
   }
 
+  /// ================= SAFE BALANCE =================
   Future<double> getBalance() async {
     await connect();
     final completer = Completer<double>();
     late StreamSubscription sub;
+
     sub = _wsStream.listen((msg) {
-      final data = jsonDecode(msg);
-      if (data['msg_type'] == 'balance') {
-        final bal = (data['balance']['balance'] ?? 0).toDouble();
-        completer.complete(bal);
+      try {
+        final data = jsonDecode(msg);
+        if (data['msg_type'] == 'balance') {
+          final bal = (data['balance']?['balance'] ?? 0).toDouble();
+          if (!completer.isCompleted) completer.complete(bal);
+          sub.cancel();
+        }
+      } catch (_) {}
+    });
+
+    _send({"balance": 1, "subscribe": 1});
+
+    // Timeout safety
+    Future.delayed(const Duration(seconds: 10), () {
+      if (!completer.isCompleted) {
+        completer.complete(0.0);
         sub.cancel();
       }
     });
-    _send({"balance": 1, "subscribe": 1});
+
     return completer.future;
   }
 
@@ -222,17 +253,19 @@ class DerivService {
   Future<Map<String, dynamic>> _sendAndWait(String type, Map<String, dynamic> data, {int timeoutSeconds = 10}) async {
     final completer = Completer<Map<String, dynamic>>();
     late StreamSubscription sub;
+
     sub = _wsStream.listen((msg) {
-      final decoded = jsonDecode(msg);
-      if (decoded is Map<String, dynamic> && decoded['msg_type'] == type && !completer.isCompleted) {
-        completer.complete(decoded);
-        sub.cancel();
-      }
+      try {
+        final decoded = jsonDecode(msg);
+        if (decoded is Map<String, dynamic> && decoded['msg_type'] == type && !completer.isCompleted) {
+          completer.complete(decoded);
+          sub.cancel();
+        }
+      } catch (_) {}
     });
 
     _send(data);
 
-    // Timeout safety
     Future.delayed(Duration(seconds: timeoutSeconds), () {
       if (!completer.isCompleted) {
         completer.complete({});

@@ -3,33 +3,33 @@ FROM dart:stable AS build
 
 WORKDIR /app
 
-# Activate Dart Frog CLI
+# Activate Dart Frog CLI (for HTTP API build)
 RUN dart pub global activate dart_frog_cli
 ENV PATH="$PATH:/root/.pub-cache/bin"
 
-# Copy pubspec and fetch dependencies
+# Copy pubspec and fetch dependencies (cache-friendly)
 COPY pubspec.* ./
 RUN dart pub get
 
 # Copy source code
 COPY . .
 
-# Build Dart Frog server
+# ---------- Build HTTP API (optional) ----------
 RUN dart_frog build
 
-# Compile server to native executable (AOT)
-RUN dart compile exe bin/server.dart -o server
+# ---------- Build standalone WebSocket signals server ----------
+RUN dart compile exe bin/signals_server.dart -o signals_server
 
 # ---------- Runtime stage ----------
 FROM dart:stable AS runtime
 
 WORKDIR /app
 
-# Copy compiled server
-COPY --from=build /app/server ./
+# Copy compiled signals server
+COPY --from=build /app/signals_server ./
 
-# Expose port
-EXPOSE 8080
+# Expose port for signals server
+EXPOSE 8081
 
-# Run server
-CMD ["./server"]
+# Run signals server
+CMD ["./signals_server"]

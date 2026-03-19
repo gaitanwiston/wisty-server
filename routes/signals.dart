@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:dart_frog/dart_frog.dart';
+
 import '../models/market_analysis_result.dart';
 import '../services/market_analysis_service.dart';
 
@@ -10,25 +10,32 @@ final Map<String, List<WebSocket>> _clients = {};
 final Map<WebSocket, StreamSubscription> _subscriptions = {};
 final Map<WebSocket, Timer> _heartbeats = {};
 
-/// ================= ROUTE =================
-Future<Response> onRequest(RequestContext context) async {
-  final request = context.request;
+void main() async {
+  const port = 8080;
+  final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+  print('✅ Wisty Signals Server running on port $port');
 
-  if (!WebSocketTransformer.isUpgradeRequest(request)) {
-    return Response(
-      statusCode: 400,
-      body: 'Not a WebSocket request',
-    );
+  await for (HttpRequest request in server) {
+    if (WebSocketTransformer.isUpgradeRequest(request)) {
+      _handleWebSocket(await WebSocketTransformer.upgrade(request));
+    } else {
+      // HTTP fallback
+      request.response
+        ..statusCode = HttpStatus.badRequest
+        ..write('WebSocket connections only')
+        ..close();
+    }
   }
+}
 
-  final ws = await WebSocketTransformer.upgrade(request);
-
+/// ================= HANDLE WS =================
+void _handleWebSocket(WebSocket ws) {
   final service = MarketAnalysisService.instance;
   String pair = 'FRXEURUSD'; // default
 
-  print('✅ Client connected');
+  print('📡 Client connected');
 
-  /// ===== SEND INITIAL DATA =====
+  /// ===== SEND LATEST SIGNAL =====
   void sendLatest() {
     final latest = service.latestFor(pair);
     if (latest != null) {
@@ -55,7 +62,7 @@ Future<Response> onRequest(RequestContext context) async {
   );
 
   _subscriptions[ws] = sub;
-  _clients.putIfAbsent(pair, () => []).add(ws);
+  _addClient(ws, pair);
 
   /// ===== HEARTBEAT =====
   _heartbeats[ws]?.cancel();
@@ -73,6 +80,7 @@ Future<Response> onRequest(RequestContext context) async {
       try {
         final data = jsonDecode(msg);
 
+        // Dynamic pair switching
         if (data['pair'] != null) {
           final newPair = data['pair'].toUpperCase();
           if (newPair != pair) {
@@ -84,6 +92,7 @@ Future<Response> onRequest(RequestContext context) async {
           }
         }
 
+        // Ping/pong
         if (msg == 'ping') ws.add('pong');
       } catch (_) {
         if (msg == 'ping') ws.add('pong');
@@ -92,16 +101,10 @@ Future<Response> onRequest(RequestContext context) async {
     onDone: () => _cleanup(ws, pair),
     onError: (_) => _cleanup(ws, pair),
   );
-
-  // Dart Frog expects Response, but WebSocket is upgraded already
-  return Response(statusCode: 101);
 }
 
 /// ================= PAYLOAD =================
-Map<String, dynamic> _buildPayload(
-  String pair,
-  MarketAnalysisResult analysis,
-) {
+Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
   final candles = analysis.candles;
   final entryPrice = candles.isNotEmpty ? candles.last.close : 0.0;
 
@@ -121,16 +124,14 @@ Map<String, dynamic> _buildPayload(
   };
 }
 
-/// ================= CLIENT MGMT =================
+/// ================= CLIENT MANAGEMENT =================
 void _addClient(WebSocket ws, String pair) {
   _clients.putIfAbsent(pair, () => []).add(ws);
 }
 
 void _removeClient(WebSocket ws, String pair) {
   _clients[pair]?.remove(ws);
-  if (_clients[pair]?.isEmpty ?? false) {
-    _clients.remove(pair);
-  }
+  if (_clients[pair]?.isEmpty ?? false) _clients.remove(pair);
 }
 
 /// ================= CLEANUP =================
