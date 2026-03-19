@@ -1,4 +1,4 @@
-// build/routes/last_price.dart
+// routes/last_price.dart
 import 'dart:convert';
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
@@ -24,6 +24,9 @@ class LastPrice {
 
 /// Route handler for GET /last-prices
 Future<Response> onRequest(RequestContext context) async {
+  final nowIso = DateTime.now().toIso8601String();
+  print('⚡ /last-prices route hit at $nowIso');
+
   try {
     // Optional query parameter ?pairs=EURUSD,USDJPY
     final pairsQuery = context.request.uri.queryParameters['pairs'];
@@ -31,12 +34,26 @@ Future<Response> onRequest(RequestContext context) async {
         ? pairsQuery.split(',').map((p) => p.trim().toUpperCase()).toList()
         : ['EURUSD', 'USDJPY', 'GBPUSD']; // default pairs
 
-    // Fetch last prices
+    final deriv = DerivService.instance;
+
+    // Ensure WebSocket is connected
+    if (!deriv.isConnected) {
+      print("🔌 Connecting to Deriv WebSocket...");
+      await deriv.connect();
+      print("✅ Connected to Deriv WebSocket");
+    }
+
+    // Fetch last prices safely
     final results = <LastPrice>[];
     for (final pair in pairs) {
-      final price = await DerivService.instance.getLastPrice(pair);
-      final epoch = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      results.add(LastPrice(pair: pair, price: price, epoch: epoch));
+      try {
+        final price = await deriv.getLastPrice(pair);
+        final epoch = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        results.add(LastPrice(pair: pair, price: price, epoch: epoch));
+      } catch (e) {
+        print("⚠ Failed to fetch price for $pair: $e");
+        results.add(LastPrice(pair: pair, price: 0.0, epoch: 0));
+      }
     }
 
     return Response.json(
@@ -44,7 +61,7 @@ Future<Response> onRequest(RequestContext context) async {
     );
   } catch (e, st) {
     // Log the error
-    print('⚠ Failed to fetch last-prices: $e\n$st');
+    print('💥 /last-prices error: $e\n$st');
     return Response.json(
       statusCode: 500,
       body: {

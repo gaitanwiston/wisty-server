@@ -4,19 +4,18 @@ import '../services/deriv_service.dart';
 
 Future<Response> onRequest(RequestContext context) async {
   final deriv = DerivService.instance;
-
   final nowIso = DateTime.now().toIso8601String();
   print("⚡ /balance route hit at $nowIso");
 
   try {
-    // Ensure websocket connection
+    // Ensure WebSocket is connected
     if (!deriv.isConnected) {
       print("🔌 Connecting to Deriv WebSocket...");
       await deriv.connect();
       print("✅ Connected to Deriv WebSocket");
     }
 
-    // Get balance safely
+    // Fetch balance safely
     final balance = await deriv.getBalance();
     final safeBalance = balance ?? 0.0;
 
