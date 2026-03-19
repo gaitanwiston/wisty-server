@@ -1,37 +1,45 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:shelf/shelf.dart';
+
+import 'package:dart_frog/dart_frog.dart';
 import 'package:shelf_web_socket/shelf_web_socket.dart';
+
 import '../models/market_analysis_result.dart';
 import '../services/market_analysis_service.dart';
 
-/// ================= WebSocket Server State =================
+/// ================= STATE =================
 final Map<String, List<WebSocket>> _clients = {};
 final Map<WebSocket, StreamSubscription> _subscriptions = {};
 final Map<WebSocket, Timer> _heartbeats = {};
 
-/// ================= Route Entry Point =================
-Handler onRequest(Request request) {
-  return webSocketHandler((WebSocket ws) {
-    final pair = 'FRXEURUSD';
+/// ================= ROUTE =================
+Future<Response> onRequest(RequestContext context) async {
+  final handler = webSocketHandler((WebSocket ws) {
     final service = MarketAnalysisService.instance;
 
-    // Send latest analysis immediately
-    final latest = service.latestFor(pair);
-    if (latest != null) {
-      try {
+    String pair = 'FRXEURUSD'; // default
+
+    print('✅ Client connected');
+
+    /// ===== SEND INITIAL DATA =====
+    void sendLatest() {
+      final latest = service.latestFor(pair);
+
+      if (latest != null) {
         ws.add(jsonEncode(_buildPayload(pair, latest)));
-      } catch (_) {}
-    } else {
-      ws.add(jsonEncode({
-        "pair": pair,
-        "status": "waiting",
-        "timestamp": DateTime.now().toUtc().toIso8601String(),
-      }));
+      } else {
+        ws.add(jsonEncode({
+          "pair": pair,
+          "status": "waiting",
+          "timestamp": DateTime.now().toUtc().toIso8601String(),
+        }));
+      }
     }
 
-    // Subscribe to live analysis
+    sendLatest();
+
+    /// ===== STREAM LISTENER =====
     final sub = service.analysisStream.listen(
       (MarketAnalysisResult analysis) {
         if (analysis.symbol.toUpperCase() == pair) {
@@ -46,24 +54,53 @@ Handler onRequest(Request request) {
     );
 
     _subscriptions[ws] = sub;
-    _clients.putIfAbsent(pair, () => []).add(ws);
+    _addClient(ws, pair);
 
-    // Heartbeat
+    /// ===== HEARTBEAT =====
     _startHeartbeat(ws);
 
-    // Listen for client messages
+    /// ===== CLIENT LISTENER =====
     ws.listen(
       (msg) {
-        if (msg == 'ping') ws.add('pong');
+        try {
+          final data = jsonDecode(msg);
+
+          /// 🔥 CLIENT ANACHAGUA PAIR
+          if (data['pair'] != null) {
+            final newPair = data['pair'].toUpperCase();
+
+            if (newPair != pair) {
+              print('📩 Switching pair: $pair → $newPair');
+
+              _removeClient(ws, pair);
+              pair = newPair;
+              _addClient(ws, pair);
+
+              sendLatest();
+            }
+          }
+
+          /// ping/pong
+          if (msg == 'ping') {
+            ws.add('pong');
+          }
+        } catch (_) {
+          if (msg == 'ping') ws.add('pong');
+        }
       },
       onDone: () => _cleanup(ws, pair),
       onError: (_) => _cleanup(ws, pair),
     );
   });
+
+  return handler(context.request);
 }
 
-/// ================= Payload Builder =================
-Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
+/// ================= PAYLOAD =================
+Map<String, dynamic> _buildPayload(
+  String pair,
+  MarketAnalysisResult analysis,
+) {
   final candles = analysis.candles;
   final entryPrice = candles.isNotEmpty ? candles.last.close : 0.0;
 
@@ -76,16 +113,29 @@ Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
     "entryPrice": entryPrice,
     "stopLoss": analysis.stopLoss ?? 0.0,
     "takeProfit": analysis.takeProfit ?? 0.0,
-    "conditionsMet": analysis.conditionsMet ?? <String>[],
-    "failedConditions": analysis.reasonsFailed ?? <String>[],
+    "conditionsMet": analysis.conditionsMet ?? [],
+    "failedConditions": analysis.reasonsFailed ?? [],
     "candleCount": candles.length,
     "timestamp": DateTime.now().toUtc().toIso8601String(),
   };
 }
 
-/// ================= Heartbeat =================
+/// ================= CLIENT MGMT =================
+void _addClient(WebSocket ws, String pair) {
+  _clients.putIfAbsent(pair, () => []).add(ws);
+}
+
+void _removeClient(WebSocket ws, String pair) {
+  _clients[pair]?.remove(ws);
+  if (_clients[pair]?.isEmpty ?? false) {
+    _clients.remove(pair);
+  }
+}
+
+/// ================= HEARTBEAT =================
 void _startHeartbeat(WebSocket ws) {
   _heartbeats[ws]?.cancel();
+
   _heartbeats[ws] = Timer.periodic(const Duration(seconds: 15), (_) {
     try {
       ws.add('ping');
@@ -95,23 +145,24 @@ void _startHeartbeat(WebSocket ws) {
   });
 }
 
-/// ================= Cleanup =================
+/// ================= CLEANUP =================
 void _cleanup(WebSocket ws, String pair) {
+  print('❌ Client disconnected');
+
   _subscriptions[ws]?.cancel();
   _subscriptions.remove(ws);
 
   _heartbeats[ws]?.cancel();
   _heartbeats.remove(ws);
 
-  _clients[pair]?.remove(ws);
-  if (_clients[pair]?.isEmpty ?? false) _clients.remove(pair);
+  _removeClient(ws, pair);
 
   try {
     ws.close();
   } catch (_) {}
 }
 
-/// ================= Helper =================
+/// ================= HELPER =================
 String _getPair(WebSocket ws) {
   for (final entry in _clients.entries) {
     if (entry.value.contains(ws)) return entry.key;
