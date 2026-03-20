@@ -10,22 +10,31 @@ final Map<String, List<WebSocketChannel>> _clients = {};
 final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 
-Response onRequest(RequestContext context) {
-  final req = context.request;
+Handler onRequest() {
+  return (context) async {
+    final req = context.request;
 
-  // Check for WebSocket upgrade
-  if (req.headers['upgrade']?.toLowerCase() != 'websocket') {
-    return Response(statusCode: 400, body: 'Not a WebSocket request');
-  }
+    // Hakikisha ni WebSocket upgrade
+    if (req.headers['upgrade']?.toLowerCase() != 'websocket') {
+      return Response(statusCode: 400, body: 'Not a WebSocket request');
+    }
 
-  // Shelf WebSocket handler (synchronous)
-  final handler = webSocketHandler((WebSocketChannel socket) {
-    _handleSocket(socket);
-  });
+    // Shelf WebSocket handler
+    final shelfHandler = webSocketHandler((WebSocketChannel socket) {
+      _handleSocket(socket);
+    });
 
-  // Cast Dart Frog request to dynamic Shelf request
-  // Note: No await needed, return as-is
-  return handler(req as dynamic);
+    // Convert Dart Frog request to shelf request
+    final shelfResponse = await shelfHandler(req as dynamic);
+
+    // Convert shelf.Response => dart_frog.Response
+    final body = await shelfResponse.readAsString();
+    return Response(
+      statusCode: shelfResponse.statusCode,
+      headers: shelfResponse.headers,
+      body: body,
+    );
+  };
 }
 
 void _handleSocket(WebSocketChannel socket) {
