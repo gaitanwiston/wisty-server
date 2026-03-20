@@ -1,36 +1,29 @@
-// routes/signals.dart
 import 'dart:async';
 import 'dart:convert';
 import 'package:dart_frog/dart_frog.dart';
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-
 import '../services/market_analysis_service.dart';
 import '../models/market_analysis_result.dart';
 
-/// ================= GLOBAL STATE =================
 final Map<String, List<WebSocketChannel>> _clients = {};
 final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 
-/// ================= DART FROG ROUTE HANDLER =================
-Handler onRequest() {
-  final handler = webSocketHandler((WebSocketChannel socket) {
+Future<Response> onRequest(RequestContext context) {
+  final shelfHandler = webSocketHandler((WebSocketChannel socket) {
     _handleSocket(socket);
   });
 
-  // 🔥 Convert Dart Frog RequestContext to Shelf Request
-  return (RequestContext context) => handler(context.request.toRequest());
+  return shelfHandler(context.request);
 }
 
-/// ================= SOCKET HANDLER =================
 void _handleSocket(WebSocketChannel socket) {
   final service = MarketAnalysisService.instance;
   String pair = 'FRXEURUSD';
 
   print('📡 Client connected to /signals');
 
-  // Send latest immediately
   void sendLatest() {
     final latest = service.latestFor(pair);
     if (latest != null) {
@@ -40,7 +33,6 @@ void _handleSocket(WebSocketChannel socket) {
 
   sendLatest();
 
-  // Listen for analysis updates
   final sub = service.analysisStream.listen((analysis) {
     if (analysis.symbol.toUpperCase() == pair) {
       socket.sink.add(jsonEncode(_buildPayload(pair, analysis)));
@@ -50,13 +42,11 @@ void _handleSocket(WebSocketChannel socket) {
   _subscriptions[socket] = sub;
   _clients.putIfAbsent(pair, () => []).add(socket);
 
-  // Heartbeat ping
   _heartbeats[socket] = Timer.periodic(
     const Duration(seconds: 15),
     (_) => socket.sink.add('ping'),
   );
 
-  // Listen for client messages
   socket.stream.listen(
     (msg) {
       pair = _handleClientMessage(socket, msg, pair);
@@ -66,9 +56,7 @@ void _handleSocket(WebSocketChannel socket) {
   );
 }
 
-/// ================= CLIENT MESSAGE HANDLER =================
-String _handleClientMessage(
-    WebSocketChannel socket, dynamic msg, String currentPair) {
+String _handleClientMessage(WebSocketChannel socket, dynamic msg, String currentPair) {
   try {
     final data = jsonDecode(msg);
     if (data['pair'] != null) {
@@ -86,9 +74,7 @@ String _handleClientMessage(
   return currentPair;
 }
 
-/// ================= PAYLOAD BUILDER =================
-Map<String, dynamic> _buildPayload(
-    String pair, MarketAnalysisResult analysis) {
+Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
   final candles = analysis.candles;
   final entryPrice = candles.isNotEmpty ? candles.last.close : 0.0;
 
@@ -105,7 +91,6 @@ Map<String, dynamic> _buildPayload(
   };
 }
 
-/// ================= CLIENT CLEANUP =================
 void _removeClient(WebSocketChannel socket, String pair) {
   _clients[pair]?.remove(socket);
   _subscriptions[socket]?.cancel();
