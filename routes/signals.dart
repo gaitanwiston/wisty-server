@@ -1,33 +1,40 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:dart_frog/dart_frog.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:shelf_web_socket/shelf_web_socket.dart';
 import '../services/market_analysis_service.dart';
 import '../models/market_analysis_result.dart';
 
-final Map<String, List<WebSocketSink>> _clients = {};
-final Map<WebSocketSink, StreamSubscription> _subscriptions = {};
-final Map<WebSocketSink, Timer> _heartbeats = {};
+/// ================= GLOBAL STORAGE =================
+final Map<String, List<WebSocketChannel>> _clients = {};
+final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
+final Map<WebSocketChannel, Timer> _heartbeats = {};
 
+/// ================= ON REQUEST =================
 Future<Response> onRequest(RequestContext context) async {
   if (context.request.headers['upgrade']?.toLowerCase() != 'websocket') {
     return Response(statusCode: 400, body: 'Not a WebSocket request');
   }
 
-  return context.webSocket((socket) {
+  // Upgrade request to WebSocket
+  return webSocketHandler((WebSocketChannel socket) {
     _handleSocket(socket);
-  });
+  })(context.request);
 }
 
-void _handleSocket(WebSocketSink socket) {
+/// ================= HANDLE SOCKET =================
+void _handleSocket(WebSocketChannel socket) {
   final service = MarketAnalysisService.instance;
   String pair = 'FRXEURUSD';
 
   print('📡 Client connected to /signals');
 
+  // Send latest immediately
   void sendLatest() {
     final latest = service.latestFor(pair);
     if (latest != null) {
-      socket.add(jsonEncode(_buildPayload(pair, latest)));
+      socket.sink.add(jsonEncode(_buildPayload(pair, latest)));
     }
   }
 
@@ -36,28 +43,31 @@ void _handleSocket(WebSocketSink socket) {
   // Listen to MarketAnalysisService stream
   final sub = service.analysisStream.listen((analysis) {
     if (analysis.symbol.toUpperCase() == pair) {
-      socket.add(jsonEncode(_buildPayload(pair, analysis)));
+      socket.sink.add(jsonEncode(_buildPayload(pair, analysis)));
     }
   });
 
   _subscriptions[socket] = sub;
   _clients.putIfAbsent(pair, () => []).add(socket);
 
-  // Heartbeat ping
+  // Heartbeat ping every 15s
   _heartbeats[socket] = Timer.periodic(
     const Duration(seconds: 15),
-    (_) => socket.add('ping'),
+    (_) => socket.sink.add('ping'),
   );
 
-  socket.done.then((_) => _cleanup(socket, pair));
-
   // Listen to messages from client
-  socket.listen((msg) {
-    pair = _handleClientMessage(socket, msg, pair);
-  }, onError: (_) => _cleanup(socket, pair));
+  socket.stream.listen(
+    (msg) {
+      pair = _handleClientMessage(socket, msg, pair);
+    },
+    onError: (_) => _cleanup(socket, pair),
+    onDone: () => _cleanup(socket, pair),
+  );
 }
 
-String _handleClientMessage(WebSocketSink socket, dynamic msg, String currentPair) {
+/// ================= HANDLE CLIENT MESSAGE =================
+String _handleClientMessage(WebSocketChannel socket, dynamic msg, String currentPair) {
   try {
     final data = jsonDecode(msg);
     if (data['pair'] != null) {
@@ -70,11 +80,12 @@ String _handleClientMessage(WebSocketSink socket, dynamic msg, String currentPai
     }
   } catch (_) {}
 
-  if (msg == 'ping') socket.add('pong');
+  if (msg == 'ping') socket.sink.add('pong');
 
   return currentPair;
 }
 
+/// ================= BUILD PAYLOAD =================
 Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
   final candles = analysis.candles;
   final entryPrice = candles.isNotEmpty ? candles.last.close : 0.0;
@@ -92,7 +103,8 @@ Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
   };
 }
 
-void _removeClient(WebSocketSink socket, String pair) {
+/// ================= REMOVE CLIENT =================
+void _removeClient(WebSocketChannel socket, String pair) {
   _clients[pair]?.remove(socket);
   _subscriptions[socket]?.cancel();
   _subscriptions.remove(socket);
@@ -100,10 +112,11 @@ void _removeClient(WebSocketSink socket, String pair) {
   _heartbeats.remove(socket);
 }
 
-void _cleanup(WebSocketSink socket, String pair) {
+/// ================= CLEANUP =================
+void _cleanup(WebSocketChannel socket, String pair) {
   print('❌ Client disconnected');
   _removeClient(socket, pair);
   try {
-    socket.close();
+    socket.sink.close();
   } catch (_) {}
 }
