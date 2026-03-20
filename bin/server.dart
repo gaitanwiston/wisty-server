@@ -10,8 +10,11 @@ import '../routes/trades.dart' as trades;
 import '../routes/index.dart' as index;
 
 Future<void> main() async {
-  // ⚡ Correct way: use Router() constructor
-  final router = Router()
+  // ⚡ Create Router instance first
+  final router = Router();
+
+  // Mount routes
+  router
     ..mount('/balance', balance.router)
     ..mount('/candles', candles.router)
     ..mount('/last_prices', last_prices.router)
@@ -19,7 +22,7 @@ Future<void> main() async {
     ..mount('/trades', trades.router)
     ..mount('/', index.router);
 
-  // Pipeline (middleware) wrapping
+  // Wrap with middleware pipeline
   final handler = Pipeline().addHandler(router);
 
   // Server config
