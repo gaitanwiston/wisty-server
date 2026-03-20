@@ -9,7 +9,7 @@ import '../routes/candles.dart' as candles;
 import '../routes/last_prices.dart' as last_prices;
 import '../routes/pairs.dart' as pairs;
 import '../routes/trades.dart' as trades;
-import '../routes/index_copy.dart' as index_copy;
+import '../routes/index.dart' as index;
 
 // WebSocket route
 import '../routes/signals.dart' as signals;
@@ -24,7 +24,7 @@ Future<void> main() async {
   router.mount('/last_prices', last_prices.router);
   router.mount('/pairs', pairs.router);
   router.mount('/trades', trades.router);
-  router.mount('/', index_copy.router);
+  router.mount('/', index.router);
 
   // Attach WebSocket route
   router.mount('/signals', signals.websocketHandler);
