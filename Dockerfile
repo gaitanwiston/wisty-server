@@ -23,9 +23,7 @@ RUN dart_frog build
 RUN dart compile exe bin/server.dart -o bin/server_exec
 
 # ---------- Runtime Stage ----------
-FROM scratch AS runtime
-
-# Set working directory
+FROM gcr.io/distroless/cc-debian11 AS runtime
 WORKDIR /app
 
 # Copy the compiled executable from build stage
