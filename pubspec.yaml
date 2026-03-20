@@ -11,7 +11,7 @@ dependencies:
   # Dart Frog core (HTTP API + routing)
 
   # WebSocket client library (for Deriv API)
-  web_socket_channel: ^3.0.3
+  web_socket_channel: ^2.4.5
   shelf_web_socket: ^1.0.1
   shelf: ^1.4.0
   
