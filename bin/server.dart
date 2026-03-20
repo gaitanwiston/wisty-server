@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'package:dart_frog/dart_frog.dart';
-//import 'package:shelf_web_socket/shelf_web_socket.dart';
-//import 'package:shelf/shelf_io.dart' show serve;
+import 'package:shelf_web_socket/shelf_web_socket.dart';
+import 'package:shelf/shelf_io.dart' show serve;
 
 // HTTP routes
 import '../routes/balance.dart' as balance;

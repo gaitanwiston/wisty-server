@@ -12,12 +12,13 @@ dependencies:
 
   # WebSocket client library (for Deriv API)
   web_socket_channel: ^3.0.3
-
+  shelf_web_socket: ^1.0.1
+  shelf: ^1.4.0
   
   # Optional HTTP client
   http: ^1.1.0
   dart_frog: ^1.2.6
-
+  
 dev_dependencies:
   # Lint rules for Dart Frog projects
   dart_frog_lint: ^0.1.0

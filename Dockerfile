@@ -13,7 +13,7 @@ COPY pubspec.* ./
 # Get dependencies
 RUN dart pub get
 
-# Copy all source code
+# Copy all source code (routes, bin, lib, etc.)
 COPY . .
 
 # Build Dart Frog HTTP API (generates build/ folder)
@@ -24,13 +24,18 @@ FROM dart:stable AS runtime
 
 WORKDIR /app
 
+# Copy dependencies from build stage
+COPY --from=build /root/.pub-cache /root/.pub-cache
+
 # Copy build output for Dart Frog API
 COPY --from=build /app/build ./build
 
-# Copy server entrypoint
-COPY --from=build /app/bin/server.dart ./bin/server.dart
+# Copy all source code (routes, bin, lib) to runtime
+COPY --from=build /app/bin ./bin
+COPY --from=build /app/routes ./routes
+COPY --from=build /app/lib ./lib
 
-# Expose ports
+# Expose port
 EXPOSE 8080
 
 # Run Dart Frog server
