@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:dart_frog/dart_frog.dart';
+import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../services/market_analysis_service.dart';
 import '../models/market_analysis_result.dart';
@@ -10,15 +11,19 @@ final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 
 Future<Response> onRequest(RequestContext context) async {
-  // Angalia kama ni WebSocket
-  if (context.request.headers['upgrade']?.toLowerCase() != 'websocket') {
+  final req = context.request;
+
+  if (req.headers['upgrade']?.toLowerCase() != 'websocket') {
     return Response(statusCode: 400, body: 'Not a WebSocket request');
   }
 
-  // Upgrade request ndani ya Dart Frog
-  return context.webSocket((WebSocketChannel socket) {
+  // Shelf WebSocket handler
+  final handler = webSocketHandler((WebSocketChannel socket) {
     _handleSocket(socket);
   });
+
+  // Convert Dart Frog Request to Shelf Request
+  return await handler(req as dynamic); // dynamic cast to avoid type mismatch
 }
 
 void _handleSocket(WebSocketChannel socket) {
