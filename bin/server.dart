@@ -8,6 +8,7 @@ import '../routes/last_prices.dart' as last_prices;
 import '../routes/pairs.dart' as pairs;
 import '../routes/trades.dart' as trades;
 import '../routes/index.dart' as index;
+import '../routes/signals.dart' as signals;
 
 Future<void> main() async {
   final router = Router();
@@ -19,6 +20,7 @@ Future<void> main() async {
     ..mount('/last_prices', last_prices.onRequest)
     ..mount('/pairs', pairs.onRequest)
     ..mount('/trades', trades.onRequest)
+    ..mount('/signals', signals.onRequest);
     ..mount('/', index.onRequest);
 
   final handler = Pipeline().addHandler(router);
