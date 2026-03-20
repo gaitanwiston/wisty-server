@@ -12,9 +12,12 @@ final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 
 Handler onRequest(RequestContext context) {
-  return webSocketHandler((WebSocketChannel socket) {
+  final handler = webSocketHandler((WebSocketChannel socket) {
     _handleSocket(socket);
   });
+
+  // 🔥 CONVERT shelf → Dart Frog
+  return (context) => handler(context.request);
 }
 
 void _handleSocket(WebSocketChannel socket) {
