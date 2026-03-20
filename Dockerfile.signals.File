@@ -1,0 +1,35 @@
+# ---------- Build Stage ----------
+FROM dart:stable AS build
+
+# Set working directory
+WORKDIR /app
+
+# Copy pubspec first (cache-friendly)
+COPY pubspec.* ./
+
+# Get dependencies
+RUN dart pub get
+
+# Copy all source code needed for signals server
+COPY servers/signals_server.dart ./servers/signals_server.dart
+COPY routes ./routes
+
+# ---------- Runtime Stage ----------
+FROM dart:stable AS runtime
+
+WORKDIR /app
+
+# Copy dependencies from build stage
+COPY --from=build /app/pubspec.* ./
+COPY --from=build /app/.dart_tool /app/.dart_tool
+COPY --from=build /app/packages /app/packages
+
+# Copy server source
+COPY --from=build /app/servers ./servers
+COPY --from=build /app/routes ./routes
+
+# Expose signals server port
+EXPOSE 8081
+
+# Run signals server directly with Dart
+CMD ["dart", "run", "servers/signals_server.dart"]
