@@ -1,8 +1,8 @@
-import 'dart:async';
 import 'dart:math';
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 import '../services/market_analysis_service.dart';
+//import '../models/candle.dart'; // ✅ muhimu sana
 
 /// ================= GLOBAL STORAGE =================
 final Map<String, Map<String, ActiveTrade>> _userTrades = {};
@@ -54,7 +54,18 @@ Future<Response> onRequest(RequestContext context) async {
 
 /// ================= OPEN TRADE =================
 Future<Response> _openTrade(RequestContext context, String userId) async {
-  final body = await context.request.json();
+  Map<String, dynamic> body = {};
+
+  // ✅ Safe JSON parsing
+  try {
+    body = await context.request.json();
+  } catch (_) {
+    return Response.json(
+      statusCode: 400,
+      body: {'error': 'Invalid JSON body'},
+    );
+  }
+
   final pairRaw = (body['pair'] as String?)?.toUpperCase();
   final action = (body['action'] as String?)?.toUpperCase();
   final stake = (body['stake'] as num?)?.toDouble();
@@ -62,7 +73,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
   if (pairRaw == null || action == null || stake == null) {
     return Response.json(
       statusCode: 400,
-      body: {'error': 'Missing parameters: pair, action, or stake'},
+      body: {'error': 'Missing parameters'},
     );
   }
 
@@ -70,59 +81,63 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
   final trades = _userTrades.putIfAbsent(userId, () => {});
   final lockKey = '$userId:$pair';
 
-  // Trade lock check
+  // ✅ Lock system
   if (_tradeLocks[lockKey] == true) {
     return Response.json(
       statusCode: 429,
-      body: {'error': 'Trade processing in progress for $pair'},
+      body: {'error': 'Trade already processing'},
     );
   }
   _tradeLocks[lockKey] = true;
 
   try {
-    // Prevent duplicate trade
     if (trades.containsKey(pair)) {
       return Response.json(
         statusCode: 400,
-        body: {'error': 'Trade for $pair already active'},
+        body: {'error': 'Trade already active'},
       );
     }
 
-    // Connect to Deriv
     final deriv = DerivService.instance;
-    if (!deriv.isConnected) await deriv.connect();
 
-    // Place trade
-    final contractId = await deriv.placeTrade(pair, action == "BUY", stake: stake);
+    if (!deriv.isConnected) {
+      await deriv.connect();
+    }
+
+    // ✅ Open trade
+    final contractId =
+        await deriv.placeTrade(pair, action == "BUY", stake: stake);
+
     if (contractId == null) {
       return Response.json(
         statusCode: 500,
-        body: {'error': 'Failed to open trade on Deriv'},
+        body: {'error': 'Trade failed'},
       );
     }
 
-    // Get entry price
-    double entryPrice;
+    // ✅ Entry price
+    double entryPrice = 0.0;
     try {
-      final rawPrice = await deriv.getLastPrice(pair);
-      entryPrice = rawPrice ?? 0.0;
-    } catch (_) {
-      entryPrice = 0.0;
-    }
+      entryPrice = await deriv.getLastPrice(pair) ?? 0.0;
+    } catch (_) {}
 
-    // Calculate ATR for SL/TP
-    final rawCandles = MarketAnalysisService.instance.latestFor(pair)?.candles ?? [];
-final candles = rawCandles.map((c) => Candle(
-  epoch: c.epoch,
-  open: c.open,
-  high: c.high,
-  low: c.low,
-  close: c.close,
-  volume: c.volume,
-)).toList();
-final atr = candles.length > 1 ? MarketAnalysisService.instance.calcATR(candles, 14) : 0.002;
+    // ✅ FIXED: Candle conversion (important)
+    final raw = MarketAnalysisService.instance.latestFor(pair);
 
-    // Create active trade
+    final candles = (raw?.candles ?? []).map((c) => Candle(
+          epoch: c.epoch,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+        )).toList();
+
+    final atr = candles.length > 1
+        ? MarketAnalysisService.instance.calcATR(candles, 14)
+        : 0.002;
+
+    // ✅ Create trade
     final trade = ActiveTrade(
       buy: action == "BUY",
       stake: stake,
@@ -130,67 +145,84 @@ final atr = candles.length > 1 ? MarketAnalysisService.instance.calcATR(candles,
       pair: pair,
       userId: userId,
       entryPrice: entryPrice,
-      sl: action == "BUY" ? entryPrice - atr : entryPrice + atr,
-      tp: action == "BUY" ? entryPrice + atr * 3 : entryPrice - atr * 3,
+      sl: action == "BUY"
+          ? entryPrice - atr
+          : entryPrice + atr,
+      tp: action == "BUY"
+          ? entryPrice + atr * 3
+          : entryPrice - atr * 3,
     );
 
     trades[pair] = trade;
 
-    print("[Trade OPEN] $userId $pair $action @ $entryPrice | ContractId: $contractId");
+    print("🚀 OPEN: $pair @ $entryPrice");
 
-    // Subscribe to contract ticks
+    // ✅ FIXED: no StreamSubscription (void issue solved)
     deriv.subscribeContract(contractId, (tick) async {
       try {
         if (trade.closed) return;
 
-        final rawPrice = tick['price'] ?? tick['quote'];
-        final price = (rawPrice is num ? rawPrice.toDouble() : double.tryParse('$rawPrice') ?? 0.0);
+        final rawPrice = tick['price'] ?? tick['quote'] ?? 0;
+        final price = rawPrice is num
+            ? rawPrice.toDouble()
+            : double.tryParse('$rawPrice') ?? 0.0;
+
         trade.currentPrice = price;
 
-        final risk = max((trade.entryPrice - trade.sl).abs(), 0.00001);
+        final risk =
+            max((trade.entryPrice - trade.sl).abs(), 0.00001);
         final rr = (price - trade.entryPrice).abs() / risk;
 
-        // Breakeven
+        // ✅ Breakeven
         if (!trade.breakeven && rr >= 1) {
           trade.sl = trade.entryPrice;
           trade.breakeven = true;
-          print("[Breakeven] $userId $pair | SL moved to entryPrice");
+          print("⚖ Breakeven: $pair");
         }
 
-        // Partial close
+        // ✅ Partial close
         if (!trade.partialClosed && rr >= 2) {
           trade.partialClosed = true;
-          print("[Partial Close] $userId $pair | 50% simulated close");
+          print("💰 Partial: $pair");
         }
 
-        // Check TP/SL hit
-        final tpHit = (trade.buy && price >= trade.tp) || (!trade.buy && price <= trade.tp);
-        final slHit = (trade.buy && price <= trade.sl) || (!trade.buy && price >= trade.sl);
+        final tpHit = (trade.buy && price >= trade.tp) ||
+            (!trade.buy && price <= trade.tp);
+
+        final slHit = (trade.buy && price <= trade.sl) ||
+            (!trade.buy && price >= trade.sl);
 
         if (tpHit || slHit) {
           await deriv.closeTradeById(contractId);
+
           trade.closed = true;
           trades.remove(pair);
           _tradeLocks.remove(lockKey);
-          print("[Trade CLOSED] $userId $pair | Price: $price | TP/SL hit");
+
+          print("✅ CLOSED: $pair @ $price");
         }
-      } catch (e, st) {
-        print("⚠ Trade subscription error: $e\n$st");
+      } catch (e) {
+        print("⚠ Error: $e");
       }
     });
 
     return Response.json(body: {
-      'pair': pair,
-      'action': action,
-      'stake': stake,
-      'contractId': contractId,
-      'status': 'OPEN',
-      'entryPrice': trade.entryPrice,
-      'sl': trade.sl,
-      'tp': trade.tp,
+      'status': 'success',
+      'data': {
+        'pair': pair,
+        'action': action,
+        'stake': stake,
+        'contractId': contractId,
+        'entryPrice': trade.entryPrice,
+        'sl': trade.sl,
+        'tp': trade.tp,
+      }
     });
   } finally {
-    if (!_userTrades[userId]!.containsKey(pair)) _tradeLocks.remove(lockKey);
+    final userMap = _userTrades[userId];
+    if (userMap == null || !userMap.containsKey(pair)) {
+      _tradeLocks.remove(lockKey);
+    }
   }
 }
 
@@ -198,27 +230,31 @@ final atr = candles.length > 1 ? MarketAnalysisService.instance.calcATR(candles,
 Future<Response> _getActiveTrades(String userId) async {
   final trades = _userTrades[userId] ?? {};
 
-  final response = trades.values.map((t) => {
-        'contractId': t.contractId,
-        'pair': t.pair,
-        'buy': t.buy,
-        'stake': t.stake,
-        'entryPrice': t.entryPrice,
-        'sl': t.sl,
-        'tp': t.tp,
-        'currentPrice': t.currentPrice,
-        'breakeven': t.breakeven,
-        'partialClosed': t.partialClosed,
-        'closed': t.closed,
-      }).toList();
-
-  return Response.json(body: response);
+  return Response.json(
+    body: trades.values.map((t) => {
+          'contractId': t.contractId,
+          'pair': t.pair,
+          'buy': t.buy,
+          'stake': t.stake,
+          'entryPrice': t.entryPrice,
+          'sl': t.sl,
+          'tp': t.tp,
+          'currentPrice': t.currentPrice,
+          'breakeven': t.breakeven,
+          'partialClosed': t.partialClosed,
+          'closed': t.closed,
+        }).toList(),
+  );
 }
 
 /// ================= HELPERS =================
 String _normalizePair(String p) {
   p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
-  while (p.startsWith('FRXFRX')) p = p.substring(3);
-  if (!p.startsWith('FRX')) p = 'FRX$p';
+  while (p.startsWith('FRXFRX')) {
+    p = p.substring(3);
+  }
+  if (!p.startsWith('FRX')) {
+    p = 'FRX$p';
+  }
   return p;
 }

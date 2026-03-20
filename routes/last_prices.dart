@@ -1,9 +1,8 @@
-// routes/last_price.dart
+// routes/last_prices.dart
 import 'dart:convert';
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 
-/// Model for last price data
 class LastPrice {
   final String pair;
   final double price;
@@ -22,51 +21,67 @@ class LastPrice {
       };
 }
 
-/// Route handler for GET /last-prices
 Future<Response> onRequest(RequestContext context) async {
-  final nowIso = DateTime.now().toIso8601String();
-  print('⚡ /last-prices route hit at $nowIso');
+  final nowIso = DateTime.now().toUtc().toIso8601String();
+  print('⚡ /last_prices hit at $nowIso');
 
   try {
-    // Optional query parameter ?pairs=EURUSD,USDJPY
     final pairsQuery = context.request.uri.queryParameters['pairs'];
+
     final pairs = (pairsQuery != null && pairsQuery.isNotEmpty)
-        ? pairsQuery.split(',').map((p) => p.trim().toUpperCase()).toList()
-        : ['EURUSD', 'USDJPY', 'GBPUSD']; // default pairs
+        ? pairsQuery
+            .split(',')
+            .map((p) => p.trim().toUpperCase())
+            .toList()
+        : ['EURUSD', 'USDJPY', 'GBPUSD'];
 
     final deriv = DerivService.instance;
 
-    // Ensure WebSocket is connected
+    /// Ensure connection
     if (!deriv.isConnected) {
-      print("🔌 Connecting to Deriv WebSocket...");
+      print("🔌 Connecting to Deriv...");
       await deriv.connect();
-      print("✅ Connected to Deriv WebSocket");
     }
 
-    // Fetch last prices safely
     final results = <LastPrice>[];
+
     for (final pair in pairs) {
       try {
         final price = await deriv.getLastPrice(pair);
-        final epoch = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-        results.add(LastPrice(pair: pair, price: price, epoch: epoch));
+        final epoch =
+            DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+
+        results.add(
+          LastPrice(pair: pair, price: price, epoch: epoch),
+        );
       } catch (e) {
-        print("⚠ Failed to fetch price for $pair: $e");
-        results.add(LastPrice(pair: pair, price: 0.0, epoch: 0));
+        print("⚠ Failed price for $pair: $e");
+
+        results.add(
+          LastPrice(pair: pair, price: 0.0, epoch: 0),
+        );
       }
     }
 
     return Response.json(
-      body: results.map((e) => e.toJson()).toList(),
+      body: {
+        "success": true,
+        "count": results.length,
+        "data": results.map((e) => e.toJson()).toList(),
+        "timestamp": nowIso,
+      },
     );
   } catch (e, st) {
-    // Log the error
-    print('💥 /last-prices error: $e\n$st');
+    print('💥 /last_prices error: $e');
+    print(st);
+
     return Response.json(
       statusCode: 500,
       body: {
+        'success': false,
         'error': 'Failed to fetch last prices',
         'details': e.toString(),
+        'timestamp': nowIso,
       },
     );
   }

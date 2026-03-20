@@ -1,36 +1,56 @@
-import 'package:dart_frog/dart_frog.dart'; 
+// routes/candles.dart
+import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 import '../models/candle.dart';
 
 Future<Response> onRequest(RequestContext context) async {
-  // Pata query parameters, tumia defaults kama hazipo
-  final pair = context.request.uri.queryParameters['pair']?.toUpperCase() ?? 'EURUSD';
-  final timeframe = int.tryParse(context.request.uri.queryParameters['timeframe'] ?? '1') ?? 1;
+  final nowIso = DateTime.now().toUtc().toIso8601String();
+
+  // Query params
+  final pair =
+      context.request.uri.queryParameters['pair']?.toUpperCase() ?? 'EURUSD';
+
+  final timeframe =
+      int.tryParse(context.request.uri.queryParameters['timeframe'] ?? '1') ?? 1;
+
+  print("📊 /candles hit → $pair TF:$timeframe at $nowIso");
 
   try {
-    // Pata candles kutoka DerivService
-    final candles = await DerivService.instance.getCandles(pair, timeframe: timeframe);
+    /// Hakikisha connection ipo
+    final deriv = DerivService.instance;
+    if (!deriv.isConnected) {
+      print("🔌 Connecting to Deriv...");
+      await deriv.connect();
+    }
 
-    // Kama hakuna candles, rudisha 404
+    /// Fetch candles
+    final candles =
+        await deriv.getCandles(pair, timeframe: timeframe);
+
     if (candles.isEmpty) {
       return Response.json(
         statusCode: 404,
-        body: {'error': 'No candles found for $pair'},
+        body: {
+          'success': false,
+          'error': 'No candles found for $pair',
+          'timestamp': nowIso,
+        },
       );
     }
 
-    // Panga candles kwa ascending time
-    candles.sort((a, b) {
-      int epochA = _parseEpoch(a.epoch);
-      int epochB = _parseEpoch(b.epoch);
-      return epochA.compareTo(epochB);
-    });
+    /// Sort (ascending time)
+    candles.sort((a, b) =>
+        _parseEpoch(a.epoch).compareTo(_parseEpoch(b.epoch)));
 
-    // Convert candles kwa format ya JSON
+    /// Convert to JSON
     final candleData = candles.map((c) {
       final epochSeconds = _parseEpoch(c.epoch);
+
       return {
-        'time': DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000).toIso8601String(),
+        'time': DateTime.fromMillisecondsSinceEpoch(
+                epochSeconds * 1000,
+                isUtc: true)
+            .toIso8601String(),
         'open': c.open,
         'high': c.high,
         'low': c.low,
@@ -40,26 +60,34 @@ Future<Response> onRequest(RequestContext context) async {
 
     return Response.json(
       body: {
+        'success': true,
         'pair': pair,
         'timeframe': timeframe,
+        'count': candleData.length,
         'candles': candleData,
+        'timestamp': nowIso,
       },
     );
   } catch (e, st) {
+    print("💥 Candles error: $e");
+    print(st);
+
     return Response.json(
       statusCode: 500,
       body: {
+        'success': false,
         'error': 'Failed to fetch candles',
         'message': e.toString(),
-        'stack': st.toString(),
+        'timestamp': nowIso,
       },
     );
   }
 }
 
-// Helper function to parse epoch safely
+/// Helper
 int _parseEpoch(dynamic epoch) {
   if (epoch is int) return epoch;
+
   if (epoch is String) {
     try {
       return DateTime.parse(epoch).millisecondsSinceEpoch ~/ 1000;
@@ -67,5 +95,6 @@ int _parseEpoch(dynamic epoch) {
       return 0;
     }
   }
+
   return 0;
 }
