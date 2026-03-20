@@ -10,22 +10,19 @@ import '../routes/trades.dart' as trades;
 import '../routes/index.dart' as index;
 
 Future<void> main() async {
-  // ⚡ Create Router instance first
   final router = Router();
 
-  // Mount routes
+  // Mount routes with onRequest handlers
   router
-    ..mount('/balance', balance.router)
-    ..mount('/candles', candles.router)
-    ..mount('/last_prices', last_prices.router)
-    ..mount('/pairs', pairs.router)
-    ..mount('/trades', trades.router)
-    ..mount('/', index.router);
+    ..mount('/balance', balance.onRequest)
+    ..mount('/candles', candles.onRequest)
+    ..mount('/last_prices', last_prices.onRequest)
+    ..mount('/pairs', pairs.onRequest)
+    ..mount('/trades', trades.onRequest)
+    ..mount('/', index.onRequest);
 
-  // Wrap with middleware pipeline
   final handler = Pipeline().addHandler(router);
 
-  // Server config
   final ip = InternetAddress.anyIPv4;
   final port = int.tryParse(Platform.environment['PORT'] ?? '8080') ?? 8080;
 
