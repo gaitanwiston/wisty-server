@@ -10,20 +10,22 @@ final Map<String, List<WebSocketChannel>> _clients = {};
 final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 
-Future<Response> onRequest(RequestContext context) async {
+Response onRequest(RequestContext context) {
   final req = context.request;
 
+  // Check for WebSocket upgrade
   if (req.headers['upgrade']?.toLowerCase() != 'websocket') {
     return Response(statusCode: 400, body: 'Not a WebSocket request');
   }
 
-  // Shelf WebSocket handler
+  // Shelf WebSocket handler (synchronous)
   final handler = webSocketHandler((WebSocketChannel socket) {
     _handleSocket(socket);
   });
 
-  // Convert Dart Frog Request to Shelf Request
-  return await handler(req as dynamic); // dynamic cast to avoid type mismatch
+  // Cast Dart Frog request to dynamic Shelf request
+  // Note: No await needed, return as-is
+  return handler(req as dynamic);
 }
 
 void _handleSocket(WebSocketChannel socket) {
@@ -41,7 +43,6 @@ void _handleSocket(WebSocketChannel socket) {
 
   sendLatest();
 
-  // Listen stream
   final sub = service.analysisStream.listen((analysis) {
     if (analysis.symbol.toUpperCase() == pair) {
       socket.sink.add(jsonEncode(_buildPayload(pair, analysis)));
@@ -51,13 +52,11 @@ void _handleSocket(WebSocketChannel socket) {
   _subscriptions[socket] = sub;
   _clients.putIfAbsent(pair, () => []).add(socket);
 
-  // Heartbeat
   _heartbeats[socket] = Timer.periodic(
     const Duration(seconds: 15),
     (_) => socket.sink.add('ping'),
   );
 
-  // Listen messages
   socket.stream.listen(
     (msg) {
       pair = _handleClientMessage(socket, msg, pair);
