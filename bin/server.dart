@@ -8,24 +8,21 @@ import '../routes/last_prices.dart' as last_prices;
 import '../routes/pairs.dart' as pairs;
 import '../routes/trades.dart' as trades;
 import '../routes/index.dart' as index;
-import '../routes/signals.dart' as signals; // WebSocket
 
 Future<void> main() async {
-  // Create router with mounted routes
+  // Router only for HTTP endpoints
   final handler = router()
     ..mount('/balance', balance.router)
     ..mount('/candles', candles.router)
     ..mount('/last_prices', last_prices.router)
     ..mount('/pairs', pairs.router)
     ..mount('/trades', trades.router)
-    ..mount('/', index.router)
-    ..mount('/signals', signals.websocketHandler);
+    ..mount('/', index.router);
 
   // Server config
   final ip = InternetAddress.anyIPv4;
   final port = int.tryParse(Platform.environment['PORT'] ?? '8080') ?? 8080;
 
-  // Start server (Dart Frog serve)
   final server = await serve(handler, ip, port);
-  print('🚀 Wisty Server running on http://${ip.address}:${server.port}');
+  print('🚀 Wisty HTTP Server running on http://${ip.address}:${server.port}');
 }
