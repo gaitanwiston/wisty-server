@@ -4,27 +4,28 @@ version: 1.0.0+1
 publish_to: none
 
 environment:
-  # SDK ya Dart inafaa >=3.2.0, stable kwa Dart Frog 1.2.x
   sdk: ">=3.2.0 <4.0.0"
 
 dependencies:
   # Dart Frog core (HTTP API + routing)
-
-  # WebSocket client library (for Deriv API)
-  web_socket_channel: ^2.4.5
-  shelf_web_socket: ^1.0.1
-  shelf: ^1.4.0
-  
-  # Optional HTTP client
-  http: ^1.1.0
   dart_frog: ^1.2.6
   
+  # Shelf (HTTP server middleware)
+  shelf: ^1.4.0
+  
+  # WebSocket support
+  shelf_web_socket: ^1.0.1
+  web_socket_channel: ^2.4.5
+  
+  # HTTP client for external APIs (optional)
+  http: ^1.1.0
+
 dev_dependencies:
   # Lint rules for Dart Frog projects
   dart_frog_lint: ^0.1.0
-
+  
   # Mocking library for tests
   mocktail: ^1.0.3
-
+  
   # Testing framework
   test: ^1.25.5
