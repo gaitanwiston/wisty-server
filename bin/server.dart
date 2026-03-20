@@ -11,8 +11,6 @@ import '../routes/pairs.dart' as pairs;
 import '../routes/trades.dart' as trades;
 import '../routes/index.dart' as index;
 
-// WebSocket route
-import '../routes/signals.dart' as signals;
 
 Future<void> main() async {
   // Create router
@@ -26,10 +24,7 @@ Future<void> main() async {
   router.mount('/trades', trades.router);
   router.mount('/', index.router);
 
-  // Attach WebSocket route
-  router.mount('/signals', signals.websocketHandler);
-
-  // Pipeline with middleware (if any)
+   // Pipeline with middleware (if any)
   final handler = Pipeline().addHandler(router);
 
   // Server config
