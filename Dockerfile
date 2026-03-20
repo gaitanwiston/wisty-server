@@ -23,4 +23,4 @@ RUN dart_frog build
 EXPOSE 8080
 
 # Run server (NO AOT - stable)
-CMD ["dart", "run", "build"]
+CMD ["dart", "build/bin/server.dart"]
