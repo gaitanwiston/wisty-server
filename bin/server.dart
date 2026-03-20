@@ -10,14 +10,17 @@ import '../routes/trades.dart' as trades;
 import '../routes/index.dart' as index;
 
 Future<void> main() async {
-  // Router only for HTTP endpoints
-  final handler = router()
+  // ⚡ Correct way: use Router() constructor
+  final router = Router()
     ..mount('/balance', balance.router)
     ..mount('/candles', candles.router)
     ..mount('/last_prices', last_prices.router)
     ..mount('/pairs', pairs.router)
     ..mount('/trades', trades.router)
     ..mount('/', index.router);
+
+  // Pipeline (middleware) wrapping
+  final handler = Pipeline().addHandler(router);
 
   // Server config
   final ip = InternetAddress.anyIPv4;
