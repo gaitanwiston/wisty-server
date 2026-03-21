@@ -13,13 +13,13 @@ Future<void> main() async {
   final router = Router();
 
   router
-    ..mount('/balance', balance.onRequest)
-    ..mount('/candles', candles.onRequest)
-    ..mount('/last_prices', last_prices.onRequest)
-    ..mount('/pairs', pairs.onRequest)
-    ..mount('/trades', trades.onRequest)
-    ..mount('/signals', signals.onRequest)
-    ..mount('/', index.onRequest);
+    ..mount('/balance', balance.onRequest())
+    ..mount('/candles', candles.onRequest())
+    ..mount('/last_prices', last_prices.onRequest())
+    ..mount('/pairs', pairs.onRequest())
+    ..mount('/trades', trades.onRequest())
+    ..mount('/signals', signals.onRequest())
+    ..mount('/', index.onRequest());
 
   final handler = Pipeline().addHandler(router);
 
