@@ -12,14 +12,14 @@ import '../routes/signals.dart' as signals;
 Future<void> main() async {
   final router = Router();
 
-  router
-    ..mount('/balance', balance.onRequest())
-    ..mount('/candles', candles.onRequest())
-    ..mount('/last_prices', last_prices.onRequest())
-    ..mount('/pairs', pairs.onRequest())
-    ..mount('/trades', trades.onRequest())
-    ..mount('/signals', signals.onRequest())
-    ..mount('/', index.onRequest());
+router
+  ..all('/balance', balance.onRequest())
+  ..all('/candles', candles.onRequest())
+  ..all('/last_prices', last_prices.onRequest())
+  ..all('/pairs', pairs.onRequest())
+  ..all('/trades', trades.onRequest())
+  ..all('/signals', signals.onRequest())
+  ..all('/', index.onRequest());
 
   final handler = Pipeline().addHandler(router);
 
