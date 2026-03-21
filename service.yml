@@ -1,0 +1,26 @@
+# =========================
+# Railway Service Definition
+# =========================
+
+services:
+  - name: wisty-http-api
+    path: .
+    build:
+      dockerfile: Dockerfile
+    env:
+      SERVICE: ""       # Default = HTTP API
+    ports:
+      - port: 8080      # HTTP API port
+        expose: true
+    run: ./bin/server_exec
+
+  - name: wisty-signals-server
+    path: .
+    build:
+      dockerfile: Dockerfile
+    env:
+      SERVICE: "signals"   # Signals server
+    ports:
+      - port: 8081          # WS Server port
+        expose: true
+    run: ./signals_server
