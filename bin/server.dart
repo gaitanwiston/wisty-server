@@ -7,7 +7,6 @@ import '../routes/last_prices.dart' as last_prices;
 import '../routes/pairs.dart' as pairs;
 import '../routes/trades.dart' as trades;
 import '../routes/index.dart' as index;
-import '../routes/signals.dart' as signals;
 
 Future<void> main() async {
   final router = Router();
@@ -18,7 +17,6 @@ Future<void> main() async {
     ..all('/last_prices', (context) => last_prices.onRequest(context))
     ..all('/pairs', (context) => pairs.onRequest(context))
     ..all('/trades', (context) => trades.onRequest(context))
-    ..all('/signals', signals.onRequest()) // ✅ WebSocket route
     ..all('/', (context) => index.onRequest(context));
 
   final handler = Pipeline().addHandler(router);

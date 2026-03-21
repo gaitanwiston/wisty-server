@@ -11,7 +11,7 @@ COPY pubspec.* ./
 RUN dart pub get
 
 # Copy all source code needed for signals server
-COPY servers/signals_server.dart ./servers/signals_server.dart
+COPY servers/signals_server.dart ./bin/signals_server.dart
 COPY routes ./routes
 
 # ---------- Runtime Stage ----------
@@ -25,11 +25,11 @@ COPY --from=build /app/.dart_tool /app/.dart_tool
 COPY --from=build /app/packages /app/packages
 
 # Copy server source
-COPY --from=build /app/servers ./servers
-COPY --from=build /app/routes ./routes
+COPY --from=build /app/bin ./bin
+COPY --from=build /app/bin ./bin
 
 # Expose signals server port
 EXPOSE 8081
 
 # Run signals server directly with Dart
-CMD ["dart", "run", "servers/signals_server.dart"]
+CMD ["dart", "run", "bin/signals_server.dart"]
