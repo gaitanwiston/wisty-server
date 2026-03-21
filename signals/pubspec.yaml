@@ -1,0 +1,32 @@
+name: wisty_server
+description: Wisty Forex server (Dart Frog + WebSocket)
+version: 1.0.0+1
+publish_to: none
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+
+dependencies:
+  # Dart Frog core (HTTP API + routing)
+  dart_frog: ^1.2.6
+  
+  # Shelf (HTTP server middleware)
+  shelf: ^1.4.0
+  
+  # WebSocket support
+  shelf_web_socket: ^1.0.1
+  web_socket_channel: ^2.4.5
+  build_runner: ^2.4.8
+  
+  # HTTP client for external APIs (optional)
+  http: ^1.1.0
+
+dev_dependencies:
+  # Lint rules for Dart Frog projects
+  dart_frog_lint: ^0.1.0
+  
+  # Mocking library for tests
+  mocktail: ^1.0.3
+  
+  # Testing framework
+  test: ^1.25.5

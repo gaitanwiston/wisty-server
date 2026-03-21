@@ -14,8 +14,8 @@ final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 
 void main() async {
-  final server = await HttpServer.bind(InternetAddress.anyIPv4, 8081);
-  print('📡 Signals WebSocket server running on ws://localhost:8081/signals');
+  final server = await HttpServer.bind(InternetAddress.anyIPv4, 8080);
+  print('📡 Signals WebSocket server running on ws://localhost:8080/signals');
 
   await for (HttpRequest request in server) {
     if (request.uri.path == '/signals') {
