@@ -30,10 +30,10 @@ WORKDIR /app
 
 # Copy binaries
 COPY --from=build /app/bin/server_exec ./bin/server_exec
-COPY --from=build /app/servers/signals_server .
+COPY --from=build /app/signals_server . 
 
 # Expose port
 EXPOSE 8080
 
 # =================== SWITCH LOGIC ===================
-CMD ["sh", "-c", "if [ \"$SERVICE\" = \"signals\" ]; then .servers/signals_server; else ./bin/server_exec; fi"]
+CMD ["sh", "-c", "if [ \"$SERVICE\" = \"signals\" ]; then ./signals_server; else ./bin/server_exec; fi"]
