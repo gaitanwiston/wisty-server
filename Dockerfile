@@ -16,10 +16,11 @@ RUN dart pub get
 # Copy all source code
 COPY . .
 
-# Build Dart Frog API (generates build/)
+# Build Dart Frog API into binary
 RUN dart_frog build
+RUN dart compile exe bin/server.dart -o bin/server_exec
 
-# Compile Signals Server
+# Compile Signals Server into binary
 RUN dart compile exe servers/signals_server.dart -o signals_server
 
 # =================== RUNTIME IMAGE ===================
@@ -27,14 +28,12 @@ FROM debian:stable-slim
 
 WORKDIR /app
 
-# Copy API build
-COPY --from=build /app/build ./build
-
-# Copy signals binary
-COPY --from=build /app/signals_server .
+# Copy binaries
+COPY --from=build /app/bin/server_exec ./bin/server_exec
+COPY --from=build /app/servers/signals_server .
 
 # Expose port
 EXPOSE 8080
 
 # =================== SWITCH LOGIC ===================
-CMD ["sh", "-c", "if [ \"$SERVICE\" = \"signals\" ]; then ./signals_server; else dart run build/bin/server.dart; fi"]
+CMD ["sh", "-c", "if [ \"$SERVICE\" = \"signals\" ]; then .servers/signals_server; else ./bin/server_exec; fi"]
