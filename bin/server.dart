@@ -13,13 +13,13 @@ Future<void> main() async {
   final router = Router();
 
 router
-  ..all('/balance', balance.onRequest())
-  ..all('/candles', candles.onRequest())
-  ..all('/last_prices', last_prices.onRequest())
-  ..all('/pairs', pairs.onRequest())
-  ..all('/trades', trades.onRequest())
-  ..all('/signals', signals.onRequest())
-  ..all('/', index.onRequest());
+  ..all('/balance', (context) => balance.onRequest(context))
+  ..all('/candles', (context) => candles.onRequest(context))
+  ..all('/last_prices', (context) => last_prices.onRequest(context))
+  ..all('/pairs', (context) => pairs.onRequest(context))
+  ..all('/trades', (context) => trades.onRequest(context))
+  ..all('/signals', signals.onRequest()) // ✅ WebSocket
+  ..all('/', (context) => index.onRequest(context));
 
   final handler = Pipeline().addHandler(router);
 
