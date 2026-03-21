@@ -10,6 +10,7 @@ final Map<String, List<WebSocketChannel>> _clients = {};
 final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 
+/// Dart Frog handler for WebSocket route
 Handler onRequest() {
   return (context) async {
     final req = context.request;
@@ -24,34 +25,31 @@ Handler onRequest() {
       _handleSocket(socket);
     });
 
-    // Convert Dart Frog request to shelf request
-    final shelfResponse = await shelfHandler(req as dynamic);
+    // Await the shelfHandler (async)
+    await shelfHandler(req as dynamic);
 
-    // Convert shelf.Response => dart_frog.Response
-    final body = await shelfResponse.readAsString();
+    // Rudisha Dart Frog Response moja kwa moja
     return Response(
-      statusCode: shelfResponse.statusCode,
-      headers: shelfResponse.headers,
-      body: body,
+      statusCode: 101, // Switching Protocols
+      body: 'WebSocket handshake completed',
     );
   };
 }
 
+/// Handle a single WebSocket connection
 void _handleSocket(WebSocketChannel socket) {
   final service = MarketAnalysisService.instance;
-  String pair = 'FRXEURUSD';
+  String pair = 'FRXEURUSD'; // Default pair
 
   print('📡 Client connected to /signals');
 
-  void sendLatest() {
-    final latest = service.latestFor(pair);
-    if (latest != null) {
-      socket.sink.add(jsonEncode(_buildPayload(pair, latest)));
-    }
+  // Send latest immediately
+  final latest = service.latestFor(pair);
+  if (latest != null) {
+    socket.sink.add(jsonEncode(_buildPayload(pair, latest)));
   }
 
-  sendLatest();
-
+  // Subscribe to market analysis stream
   final sub = service.analysisStream.listen((analysis) {
     if (analysis.symbol.toUpperCase() == pair) {
       socket.sink.add(jsonEncode(_buildPayload(pair, analysis)));
@@ -61,11 +59,13 @@ void _handleSocket(WebSocketChannel socket) {
   _subscriptions[socket] = sub;
   _clients.putIfAbsent(pair, () => []).add(socket);
 
+  // Heartbeat ping every 15 seconds
   _heartbeats[socket] = Timer.periodic(
     const Duration(seconds: 15),
     (_) => socket.sink.add('ping'),
   );
 
+  // Listen to client messages
   socket.stream.listen(
     (msg) {
       pair = _handleClientMessage(socket, msg, pair);
@@ -75,6 +75,7 @@ void _handleSocket(WebSocketChannel socket) {
   );
 }
 
+/// Handle client messages like pair changes or ping
 String _handleClientMessage(WebSocketChannel socket, dynamic msg, String currentPair) {
   try {
     final data = jsonDecode(msg);
@@ -93,6 +94,7 @@ String _handleClientMessage(WebSocketChannel socket, dynamic msg, String current
   return currentPair;
 }
 
+/// Build payload for client
 Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
   final candles = analysis.candles;
   final entryPrice = candles.isNotEmpty ? candles.last.close : 0.0;
@@ -110,6 +112,7 @@ Map<String, dynamic> _buildPayload(String pair, MarketAnalysisResult analysis) {
   };
 }
 
+/// Remove client subscriptions and timers
 void _removeClient(WebSocketChannel socket, String pair) {
   _clients[pair]?.remove(socket);
   _subscriptions[socket]?.cancel();
@@ -118,6 +121,7 @@ void _removeClient(WebSocketChannel socket, String pair) {
   _heartbeats.remove(socket);
 }
 
+/// Cleanup connection on disconnect
 void _cleanup(WebSocketChannel socket, String pair) {
   print('❌ Client disconnected');
   _removeClient(socket, pair);

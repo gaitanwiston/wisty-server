@@ -12,14 +12,14 @@ import '../routes/signals.dart' as signals;
 Future<void> main() async {
   final router = Router();
 
-router
-  ..all('/balance', (context) => balance.onRequest(context))
-  ..all('/candles', (context) => candles.onRequest(context))
-  ..all('/last_prices', (context) => last_prices.onRequest(context))
-  ..all('/pairs', (context) => pairs.onRequest(context))
-  ..all('/trades', (context) => trades.onRequest(context))
-  ..all('/signals', signals.onRequest()) // ✅ WebSocket
-  ..all('/', (context) => index.onRequest(context));
+  router
+    ..all('/balance', (context) => balance.onRequest(context))
+    ..all('/candles', (context) => candles.onRequest(context))
+    ..all('/last_prices', (context) => last_prices.onRequest(context))
+    ..all('/pairs', (context) => pairs.onRequest(context))
+    ..all('/trades', (context) => trades.onRequest(context))
+    ..all('/signals', signals.onRequest()) // ✅ WebSocket route
+    ..all('/', (context) => index.onRequest(context));
 
   final handler = Pipeline().addHandler(router);
 
