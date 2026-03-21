@@ -34,9 +34,9 @@ COPY --from=build /app/signals_server ./signals_server
 
 # Expose ports for both services
 # HTTP API → 8080
-# WebSocket Signals → 8081
+# WebSocket Signals → 8080
 EXPOSE 8080
-EXPOSE 8081
+EXPOSE 8080
 
 # =================== SWITCH LOGIC ===================
 # Railway sets SERVICE env variable to decide which server to run
