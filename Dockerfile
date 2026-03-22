@@ -26,15 +26,13 @@ FROM debian:stable-slim
 
 WORKDIR /app
 
-# Install minimal dependencies (optional: if you need curl, ca-certificates, etc.)
+# Install minimal dependencies (optional: ca-certificates for HTTPS)
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Copy compiled server executable and frog tool
+# Copy compiled server executable
 COPY --from=build /app/bin/server_exec ./bin/server_exec
-COPY --from=build /app/bin/frog_tool/ ./bin/frog_tool/
 
 # Only copy public if it exists
-# (avoid error if folder is missing)
 COPY --from=build /app/public/ ./public/ 2>/dev/null || true
 
 # Expose port
