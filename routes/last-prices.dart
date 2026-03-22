@@ -23,7 +23,7 @@ class LastPrice {
 
 Future<Response> onRequest(RequestContext context) async {
   final nowIso = DateTime.now().toUtc().toIso8601String();
-  print('⚡ /last_prices hit at $nowIso');
+  print('⚡ /last-prices hit at $nowIso');
 
   try {
     final pairsQuery = context.request.uri.queryParameters['pairs'];

@@ -3,19 +3,24 @@ FROM dart:stable AS build
 
 WORKDIR /app
 
-# Copy pubspec first (cache friendly)
+# Copy pubspec first
 COPY pubspec.* ./
 
-# Get dependencies
+# Install dependencies
 RUN dart pub get
 
-# Copy only source code
+# Copy source code
 COPY servers ./servers
+COPY services ./services
+COPY models ./models
 
-# Compile executable
+# 🔥 CREATE bin folder (IMPORTANT FIX)
+RUN mkdir -p bin
+
+# Compile Dart server to executable
 RUN dart compile exe servers/signals_server.dart -o bin/signals_server_exec
 
-# ---------- Final Stage ----------
+# ---------- Runtime Stage ----------
 FROM debian:stable-slim
 
 WORKDIR /app
@@ -23,11 +28,12 @@ WORKDIR /app
 # Copy executable
 COPY --from=build /app/bin/signals_server_exec ./bin/signals_server_exec
 
-# Set execute permissions
+# Permission
 RUN chmod +x ./bin/signals_server_exec
 
-# Expose port (Railway default)
+# Port
+ENV PORT=8080
 EXPOSE 8080
 
-# Run server
+# Run
 CMD ["./bin/signals_server_exec"]

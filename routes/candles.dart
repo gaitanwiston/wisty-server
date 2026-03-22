@@ -6,50 +6,31 @@ import '../models/candle.dart';
 Future<Response> onRequest(RequestContext context) async {
   final nowIso = DateTime.now().toUtc().toIso8601String();
 
-  // Query params
   final pair =
       context.request.uri.queryParameters['pair']?.toUpperCase() ?? 'EURUSD';
-
   final timeframe =
       int.tryParse(context.request.uri.queryParameters['timeframe'] ?? '1') ?? 1;
+
+  if (timeframe <= 0) {
+    return Response.json(
+      statusCode: 400,
+      body: {'success': false, 'error': 'Invalid timeframe'},
+    );
+  }
 
   print("📊 /candles hit → $pair TF:$timeframe at $nowIso");
 
   try {
-    /// Hakikisha connection ipo
     final deriv = DerivService.instance;
-    if (!deriv.isConnected) {
-      print("🔌 Connecting to Deriv...");
-      await deriv.connect();
-    }
+    if (!deriv.isConnected) await deriv.connect();
 
-    /// Fetch candles
-    final candles =
-        await deriv.getCandles(pair, timeframe: timeframe);
+    final candleList = await deriv.getCandles(pair, timeframe: timeframe);
 
-    if (candles.isEmpty) {
-      return Response.json(
-        statusCode: 404,
-        body: {
-          'success': false,
-          'error': 'No candles found for $pair',
-          'timestamp': nowIso,
-        },
-      );
-    }
-
-    /// Sort (ascending time)
-    candles.sort((a, b) =>
-        _parseEpoch(a.epoch).compareTo(_parseEpoch(b.epoch)));
-
-    /// Convert to JSON
-    final candleData = candles.map((c) {
+    // Avoid 404, return empty array if no data
+    final candleData = candleList.map((c) {
       final epochSeconds = _parseEpoch(c.epoch);
-
       return {
-        'time': DateTime.fromMillisecondsSinceEpoch(
-                epochSeconds * 1000,
-                isUtc: true)
+        'time': DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000, isUtc: true)
             .toIso8601String(),
         'open': c.open,
         'high': c.high,
@@ -82,19 +63,4 @@ Future<Response> onRequest(RequestContext context) async {
       },
     );
   }
-}
-
-/// Helper
-int _parseEpoch(dynamic epoch) {
-  if (epoch is int) return epoch;
-
-  if (epoch is String) {
-    try {
-      return DateTime.parse(epoch).millisecondsSinceEpoch ~/ 1000;
-    } catch (_) {
-      return 0;
-    }
-  }
-
-  return 0;
 }
