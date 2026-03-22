@@ -3,6 +3,15 @@ import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 import '../models/candle.dart';
 
+/// Private helper to parse epoch to seconds.
+/// Supports int, double, and string inputs.
+int _parseEpoch(dynamic epoch) {
+  if (epoch is int) return epoch;
+  if (epoch is double) return epoch.toInt();
+  if (epoch is String) return int.tryParse(epoch) ?? 0;
+  return 0; // fallback if type is unexpected
+}
+
 Future<Response> onRequest(RequestContext context) async {
   final nowIso = DateTime.now().toUtc().toIso8601String();
 
@@ -26,7 +35,7 @@ Future<Response> onRequest(RequestContext context) async {
 
     final candleList = await deriv.getCandles(pair, timeframe: timeframe);
 
-    // Avoid 404, return empty array if no data
+    // Map candles safely, fallback empty array if null
     final candleData = candleList.map((c) {
       final epochSeconds = _parseEpoch(c.epoch);
       return {
