@@ -4,7 +4,7 @@ import 'package:dart_frog/dart_frog.dart';
 // Import routes
 import '../routes/balance.dart' as balance;
 import '../routes/candles.dart' as candles;
-import '../routes/last_prices.dart' as last_prices;
+import '../routes/last-prices.dart' as last_prices;
 import '../routes/pairs.dart' as pairs;
 import '../routes/trades.dart' as trades;
 import '../routes/index.dart' as index;
