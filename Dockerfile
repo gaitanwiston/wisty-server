@@ -15,7 +15,7 @@ COPY . .
 RUN dart pub global activate dart_frog_cli
 ENV PATH="$PATH:/root/.pub-cache/bin"
 
-# Build Dart Frog (optional, keeps frog build artifacts)
+# Build Dart Frog (optional)
 RUN dart_frog build
 
 # Compile server to AOT executable
@@ -32,8 +32,8 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 # Copy compiled server executable
 COPY --from=build /app/bin/server_exec ./bin/server_exec
 
-# Only copy public if it exists
-COPY --from=build /app/public/ ./public/ 2>/dev/null || true
+# Optional: copy public folder **only if it exists in source**
+# COPY public/ ./public/   # uncomment only if public/ exists
 
 # Expose port
 EXPOSE 8080
