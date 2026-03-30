@@ -1,4 +1,3 @@
-//import 'package:flutter/foundation.dart';
 import 'candle.dart';
 
 class MarketAnalysisResult {
@@ -7,6 +6,7 @@ class MarketAnalysisResult {
   final List<Candle>? candlesM5;     // optional
   final List<Candle>? candlesM15;    // optional
   final List<Candle>? candlesM30;    // optional
+  final List<Candle>? candlesH1;     // added H1 candles
 
   // ================= Market structure & filters =================
   final bool structureValid;
@@ -45,6 +45,7 @@ class MarketAnalysisResult {
     this.candlesM5,
     this.candlesM15,
     this.candlesM30,
+    this.candlesH1, // added H1
     this.structureValid = false,
     this.emaValid = false,
     this.rsiValid = false,

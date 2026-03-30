@@ -1,15 +1,13 @@
-// routes/candles.dart
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 import '../models/candle.dart';
 
 /// Private helper to parse epoch to seconds.
-/// Supports int, double, and string inputs.
 int _parseEpoch(dynamic epoch) {
   if (epoch is int) return epoch;
   if (epoch is double) return epoch.toInt();
   if (epoch is String) return int.tryParse(epoch) ?? 0;
-  return 0; // fallback if type is unexpected
+  return 0;
 }
 
 Future<Response> onRequest(RequestContext context) async {
@@ -33,9 +31,10 @@ Future<Response> onRequest(RequestContext context) async {
     final deriv = DerivService.instance;
     if (!deriv.isConnected) await deriv.connect();
 
-    final candleList = await deriv.getCandles(pair, timeframe: timeframe);
+    // ✅ Correct parameter name matches deriv_service.dart
+    final candleList = await deriv.getCandlesWithTF(pair, timeframe: timeframe);
 
-    // Map candles safely, fallback empty array if null
+    // Map candles safely
     final candleData = candleList.map((c) {
       final epochSeconds = _parseEpoch(c.epoch);
       return {
