@@ -1,7 +1,7 @@
+// routes/trades.dart
 import 'dart:math';
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
-import '../services/market_analysis_service.dart';
 
 /// ================= GLOBAL STORAGE =================
 final Map<String, Map<String, ActiveTrade>> _userTrades = {};
@@ -54,7 +54,6 @@ Future<Response> onRequest(RequestContext context) async {
 /// ================= OPEN TRADE =================
 Future<Response> _openTrade(RequestContext context, String userId) async {
   Map<String, dynamic> body = {};
-
   try {
     body = await context.request.json();
   } catch (_) {
@@ -96,14 +95,10 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
     }
 
     final deriv = DerivService.instance;
+    if (!deriv.isConnected) await deriv.connect();
 
-    if (!deriv.isConnected) {
-      await deriv.connect();
-    }
-
-    final contractId =
-        await deriv.placeTrade(pair, action == "BUY", stake: stake);
-
+    // Place trade
+    final contractId = await deriv.placeTrade(pair, action == "BUY", stake: stake);
     if (contractId == null) {
       return Response.json(
         statusCode: 500,
@@ -111,9 +106,9 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
       );
     }
 
-    double entryPrice = await deriv.getLastPrice(pair);
+    final entryPrice = await deriv.getLastPrice(pair);
 
-    /// 🔥 SIMPLE ATR (type-safe)
+    // ATR calculation
     final candles = await deriv.getCandlesWithTF(pair);
     final atr = _calcATR(candles, 14);
 
@@ -129,47 +124,42 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
     );
 
     trades[pair] = trade;
-
     print("🚀 OPEN: $pair @ $entryPrice");
 
+    // Subscribe to live contract updates
     deriv.subscribeContract(contractId, (tick) async {
       try {
         if (trade.closed) return;
 
         final rawPrice = tick['price'] ?? tick['quote'] ?? 0;
-        final price = rawPrice is num
-            ? rawPrice.toDouble()
-            : double.tryParse('$rawPrice') ?? 0.0;
-
+        final price = rawPrice is num ? rawPrice.toDouble() : double.tryParse('$rawPrice') ?? 0.0;
         trade.currentPrice = price;
 
         final risk = max((trade.entryPrice - trade.sl).abs(), 0.00001);
         final rr = (price - trade.entryPrice).abs() / risk;
 
+        // Breakeven adjustment
         if (!trade.breakeven && rr >= 1) {
           trade.sl = trade.entryPrice;
           trade.breakeven = true;
           print("⚖ Breakeven: $pair");
         }
 
+        // Partial close
         if (!trade.partialClosed && rr >= 2) {
           trade.partialClosed = true;
           print("💰 Partial: $pair");
         }
 
-        final tpHit = (trade.buy && price >= trade.tp) ||
-            (!trade.buy && price <= trade.tp);
-
-        final slHit = (trade.buy && price <= trade.sl) ||
-            (!trade.buy && price >= trade.sl);
+        // Check TP/SL hit
+        final tpHit = (trade.buy && price >= trade.tp) || (!trade.buy && price <= trade.tp);
+        final slHit = (trade.buy && price <= trade.sl) || (!trade.buy && price >= trade.sl);
 
         if (tpHit || slHit) {
           await deriv.closeTradeById(contractId);
-
           trade.closed = true;
           trades.remove(pair);
           _tradeLocks.remove(lockKey);
-
           print("✅ CLOSED: $pair @ $price");
         }
       } catch (e) {
@@ -187,12 +177,11 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
         'entryPrice': trade.entryPrice,
         'sl': trade.sl,
         'tp': trade.tp,
-      }
+      },
     });
   } finally {
-    // ensure lock cleanup
-    final userMap = _userTrades[userId];
-    if (userMap == null || !userMap.containsKey(pair)) {
+    // Ensure lock is removed if trade not added
+    if (!_userTrades[userId]!.containsKey(pair)) {
       _tradeLocks.remove(lockKey);
     }
   }
@@ -201,7 +190,6 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
 /// ================= GET ACTIVE TRADES =================
 Future<Response> _getActiveTrades(String userId) async {
   final trades = _userTrades[userId] ?? {};
-
   return Response.json(
     body: trades.values.map((t) => {
           'contractId': t.contractId,
@@ -219,12 +207,11 @@ Future<Response> _getActiveTrades(String userId) async {
   );
 }
 
-/// ================= ATR =================
+/// ================= ATR CALCULATION =================
 double _calcATR(List candles, int period) {
   if (candles.length < period + 1) return 0.002;
 
   double atr = 0;
-
   for (int i = 1; i <= period; i++) {
     final c = candles[i];
     final prev = candles[i - 1];
@@ -232,7 +219,7 @@ double _calcATR(List candles, int period) {
     final tr = <double>[
       c.high.toDouble() - c.low.toDouble(),
       (c.high.toDouble() - prev.close.toDouble()).abs(),
-      (c.low.toDouble() - prev.close.toDouble()).abs()
+      (c.low.toDouble() - prev.close.toDouble()).abs(),
     ].reduce(max);
 
     atr += tr;
@@ -241,14 +228,12 @@ double _calcATR(List candles, int period) {
   return atr / period;
 }
 
-/// ================= HELPERS =================
+/// ================= PAIR NORMALIZATION =================
 String _normalizePair(String p) {
   p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
   while (p.startsWith('FRXFRX')) {
     p = p.substring(3);
   }
-  if (!p.startsWith('FRX')) {
-    p = 'FRX$p';
-  }
+  if (!p.startsWith('FRX')) p = 'FRX$p';
   return p;
 }

@@ -37,7 +37,7 @@ class MarketAnalysisService {
     await deriv.subscribeCandles(pair);
 
     Timer.periodic(const Duration(seconds: 1), (_) async {
-      final candles = await deriv.getCandlesWithTF(pair, timeframe: 1); // use correct parameter
+      final candles = await deriv.getCandlesWithTF(pair, timeframe: 1);
       if (candles.length >= minCandles) {
         _processPair(pair, candles);
       }
@@ -53,6 +53,7 @@ class MarketAnalysisService {
   // ================= PROCESS =================
   void _processPair(String pair, List<Candle> candlesM1) {
     final p = _normalize(pair);
+    print("⏱ Processing pair $p with ${candlesM1.length} M1 candles");
 
     _candlesM1[p] = candlesM1;
     _candlesM5[p] = _aggregate(candlesM1, 5);
@@ -122,7 +123,7 @@ class MarketAnalysisService {
     if (conf == EntryConfirmation.bullish) scoreBuy += 2;
     if (conf == EntryConfirmation.bearish) scoreSell += 2;
 
-    // Volatility filter (avoid dead market)
+    // Volatility filter
     if (atr > 0.0003) {
       scoreBuy += 1;
       scoreSell += 1;
@@ -135,22 +136,21 @@ class MarketAnalysisService {
     // Cooldown
     final now = DateTime.now();
     final lastTime = _lastSignalTime[pair];
-
     if (lastTime != null && now.difference(lastTime).inSeconds < signalCooldownSec) {
       canBuy = false;
       canSell = false;
     }
-
-    if (canBuy || canSell) {
-      _lastSignalTime[pair] = now;
-    }
+    if (canBuy || canSell) _lastSignalTime[pair] = now;
 
     // ================= RR =================
     double stopLoss = atr * 1.5;
     double takeProfit = atr * 3;
 
+    // ================= PRINT DEBUG =================
     print("📊 $pair BUY=$canBuy SELL=$canSell scoreB=$scoreBuy scoreS=$scoreSell");
     print("🧠 H1=$biasH1 M30=$biasM30 M15=$biasM15 RSI=$rsi ATR=$atr Conf=$conf");
+    print("📈 EMA50 last: ${ema50.isNotEmpty ? ema50.last : 'N/A'} EMA200 last: ${ema200.isNotEmpty ? ema200.last : 'N/A'}");
+    print("📌 StopLoss=$stopLoss TakeProfit=$takeProfit");
 
     return MarketAnalysisResult(
       symbol: pair,
@@ -184,81 +184,64 @@ class MarketAnalysisService {
   // ================= STRUCTURE =================
   MarketBias _detectStructure(List<Candle> c) {
     if (c.length < 20) return MarketBias.none;
-
     final last = c[c.length - 2];
     final prev = c[c.length - 3];
-
     if (last.high > prev.high && last.low > prev.low) return MarketBias.buy;
     if (last.high < prev.high && last.low < prev.low) return MarketBias.sell;
-
     return MarketBias.none;
   }
 
   // ================= CONFIRMATION =================
   EntryConfirmation _confirmation(List<Candle> c, MarketBias bias) {
     if (c.length < 3) return EntryConfirmation.none;
-
     final last = c[c.length - 2];
     final prev = c[c.length - 3];
-
     final strong = (last.close - last.open).abs() > (last.high - last.low) * 0.4;
 
-    if (bias == MarketBias.buy && last.close > prev.high && strong) {
-      return EntryConfirmation.bullish;
-    }
-
-    if (bias == MarketBias.sell && last.close < prev.low && strong) {
-      return EntryConfirmation.bearish;
-    }
-
+    if (bias == MarketBias.buy && last.close > prev.high && strong) return EntryConfirmation.bullish;
+    if (bias == MarketBias.sell && last.close < prev.low && strong) return EntryConfirmation.bearish;
     return EntryConfirmation.none;
   }
 
   // ================= RSI =================
   double _calcRSI(List<Candle> c, int period) {
     if (c.length < period + 1) return 50;
-
     double gain = 0, loss = 0;
     for (int i = c.length - period; i < c.length; i++) {
       final diff = c[i].close - c[i - 1].close;
       if (diff > 0) gain += diff;
       if (diff < 0) loss -= diff;
     }
-
     final rs = gain / max(loss, 0.00001);
+    print("📌 Calculated RSI: $rs");
     return 100 - (100 / (1 + rs));
   }
 
   // ================= ATR =================
   double _calcATR(List<Candle> c, int period) {
-    if (c.length < period + 1) return 0;
+    if (c.length < period + 1) return 0.002;
     double atr = 0;
-
     for (int i = 1; i <= period; i++) {
       final high = c[i].high.toDouble();
       final low = c[i].low.toDouble();
       final prevClose = c[i - 1].close.toDouble();
-
       final tr = <double>[
         high - low,
         (high - prevClose).abs(),
         (low - prevClose).abs(),
       ].reduce(max);
-
       atr += tr;
     }
-
-    return atr / period;
+    atr /= period;
+    print("📌 Calculated ATR: $atr");
+    return atr;
   }
 
   // ================= EMA =================
   List<double> _calcEMA(List<Candle> c, int period) {
     if (c.length < period) return [];
-
     double sma = 0;
-    for (int i = c.length - period; i < c.length; i++) {
-      sma += c[i].close;
-    }
+    for (int i = c.length - period; i < c.length; i++) sma += c[i].close;
     sma /= period;
 
     final k = 2 / (period + 1);
@@ -269,17 +252,14 @@ class MarketAnalysisService {
       ema = c[i].close * k + ema * (1 - k);
       out.add(ema);
     }
-
     return out;
   }
 
   // ================= AGGREGATE =================
   List<Candle> _aggregate(List<Candle> c, int tf) {
     final out = <Candle>[];
-
     for (final candle in c) {
       final bucket = (candle.epoch ~/ (tf * 60)) * (tf * 60);
-
       if (out.isEmpty || out.last.epoch != bucket) {
         out.add(Candle(
           epoch: bucket,
@@ -301,7 +281,7 @@ class MarketAnalysisService {
         );
       }
     }
-
+    print("📊 Aggregated ${c.length} candles into ${out.length} TF=$tf buckets");
     return out;
   }
 
@@ -313,8 +293,11 @@ class MarketAnalysisService {
 
   // ================= NORMALIZE =================
   String _normalize(String p) {
+    final original = p;
     p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+    while (p.startsWith('FRXFRX')) p = p.substring(3);
     if (!p.startsWith('FRX')) p = 'FRX$p';
+    print("🔹 Normalized pair: $original → $p");
     return p;
   }
 }

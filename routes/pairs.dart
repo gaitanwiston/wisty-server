@@ -1,7 +1,8 @@
+// routes/pairs.dart
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 
-/// Simple Pair model for JSON mapping
+/// ================= MARKET PAIR MODEL =================
 class MarketPair {
   final String symbol;
   final String displayName;
@@ -12,11 +13,29 @@ class MarketPair {
     required this.displayName,
     required this.type,
   });
+
+  Map<String, dynamic> toJson() => {
+        'symbol': symbol,
+        'displayName': displayName,
+        'type': type,
+      };
 }
 
-/// Route handler for GET /pairs
+/// ================= PAIR NORMALIZER =================
+String _normalizePair(String p) {
+  p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+  while (p.startsWith('FRXFRX')) {
+    p = p.substring(3);
+  }
+  if (!p.startsWith('FRX')) {
+    p = 'FRX$p';
+  }
+  return p;
+}
+
+/// ================= ROUTE HANDLER =================
 Future<Response> onRequest(RequestContext context) async {
-  final nowIso = DateTime.now().toIso8601String();
+  final nowIso = DateTime.now().toUtc().toIso8601String();
   print("⚡ /pairs route hit at $nowIso");
 
   final deriv = DerivService.instance;
@@ -29,33 +48,25 @@ Future<Response> onRequest(RequestContext context) async {
       print("✅ Connected to Deriv WebSocket");
     }
 
-    // Fetch market pairs (originally List<String>)
+    // Fetch raw market pairs from Deriv
     final rawPairs = await deriv.getMarketPairs();
 
-    // Convert to MarketPair objects
+    // Normalize and map to MarketPair model
     final pairs = rawPairs.map((p) {
-      // Example: p = "frxEURUSD"
-      final symbol = p.toUpperCase();
-      final displayName = symbol.replaceAll("FRX", ""); // strip prefix
-      final type = "forex"; // default type, customize if needed
+      final symbol = _normalizePair(p);        // normalized FRX-prefixed symbol
+      final displayName = symbol.replaceAll("FRX", ""); // remove prefix for display
+      final type = "forex";                    // default type
       return MarketPair(symbol: symbol, displayName: displayName, type: type);
     }).toList();
 
     // Sort alphabetically by displayName
     pairs.sort((a, b) => a.displayName.compareTo(b.displayName));
 
-    // Map to JSON
-    final pairsJson = pairs
-        .map((p) => {
-              "symbol": p.symbol,
-              "displayName": p.displayName,
-              "type": p.type,
-            })
-        .toList();
-
     return Response.json(
       body: {
-        "pairs": pairsJson,
+        "success": true,
+        "pairs": pairs.map((p) => p.toJson()).toList(),
+        "count": pairs.length,
         "timestamp": nowIso,
       },
     );
@@ -65,6 +76,7 @@ Future<Response> onRequest(RequestContext context) async {
     return Response.json(
       statusCode: 500,
       body: {
+        "success": false,
         "error": "Failed to fetch market pairs",
         "details": e.toString(),
         "timestamp": nowIso,

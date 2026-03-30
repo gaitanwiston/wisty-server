@@ -2,7 +2,8 @@ import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 import '../models/candle.dart';
 
-/// Private helper to parse epoch to seconds.
+/// ================= HELPERS =================
+/// Safely parse epoch to seconds
 int _parseEpoch(dynamic epoch) {
   if (epoch is int) return epoch;
   if (epoch is double) return epoch.toInt();
@@ -10,11 +11,25 @@ int _parseEpoch(dynamic epoch) {
   return 0;
 }
 
+/// Normalize pair (FRX prefix) for Deriv API
+String _normalizePair(String p) {
+  p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+  while (p.startsWith('FRXFRX')) {
+    p = p.substring(3);
+  }
+  if (!p.startsWith('FRX')) {
+    p = 'FRX$p';
+  }
+  return p;
+}
+
+/// ================= ROUTE HANDLER =================
 Future<Response> onRequest(RequestContext context) async {
   final nowIso = DateTime.now().toUtc().toIso8601String();
 
-  final pair =
-      context.request.uri.queryParameters['pair']?.toUpperCase() ?? 'EURUSD';
+  // Parse pair & timeframe
+  final rawPair = context.request.uri.queryParameters['pair'] ?? 'EURUSD';
+  final pair = _normalizePair(rawPair);
   final timeframe =
       int.tryParse(context.request.uri.queryParameters['timeframe'] ?? '1') ?? 1;
 
@@ -29,9 +44,14 @@ Future<Response> onRequest(RequestContext context) async {
 
   try {
     final deriv = DerivService.instance;
-    if (!deriv.isConnected) await deriv.connect();
 
-    // ✅ Correct parameter name matches deriv_service.dart
+    if (!deriv.isConnected) {
+      print("🔌 Connecting to Deriv WebSocket...");
+      await deriv.connect();
+      print("✅ Connected to Deriv");
+    }
+
+    // Fetch candles
     final candleList = await deriv.getCandlesWithTF(pair, timeframe: timeframe);
 
     // Map candles safely
@@ -44,8 +64,12 @@ Future<Response> onRequest(RequestContext context) async {
         'high': c.high,
         'low': c.low,
         'close': c.close,
+        'volume': c.volume ?? 0, // ensure volume exists
       };
     }).toList();
+
+    // Logging summary
+    print("✅ Fetched ${candleData.length} candles for $pair");
 
     return Response.json(
       body: {
@@ -58,7 +82,7 @@ Future<Response> onRequest(RequestContext context) async {
       },
     );
   } catch (e, st) {
-    print("💥 Candles error: $e");
+    print("💥 /candles error for $pair: $e");
     print(st);
 
     return Response.json(

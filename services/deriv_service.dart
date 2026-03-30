@@ -5,6 +5,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/candle.dart' as model;
 
 /// ================= CONFIG =================
+const String derivToken = "5Q0tS24UGTwKvDX";
 const int derivAppId = 90453;
 
 class DerivService {
@@ -21,31 +22,31 @@ class DerivService {
 
   final StreamController<Map<String, dynamic>> _controller =
       StreamController.broadcast();
-
   Stream<Map<String, dynamic>> get stream => _controller.stream;
 
   final Map<String, List<model.Candle>> _candles = {};
   final Set<String> _subscribed = {};
-  final Map<String, String> _symbolMap = {};
+  final Map<String, String> _symbolMap = {}; // lowercase keys -> actual
 
   final Map<String, Map<String, dynamic>> openTrades = {};
-  final Map<String, StreamController<Map<String, dynamic>>> _contractStreams = {};
+  final Map<String, StreamController<Map<String, dynamic>>> _contractStreams =
+      {};
 
   String? _token;
 
+  double _cachedBalance = 0.0;
   bool get isConnected => _authorized && _connected;
+  double get cachedBalance => _cachedBalance;
 
   /// ================= CONNECT =================
   Future<void> connect([String? token]) async {
     if (_connected) return;
 
-    _token = token ?? "OKUplSparRWhlOf";
-
-    final uri = Uri.parse(
-        "wss://ws.derivws.com/websockets/v3?app_id=$derivAppId");
+    _token = token ?? derivToken;
+    final uri =
+        Uri.parse("wss://ws.derivws.com/websockets/v3?app_id=$derivAppId");
 
     print("🔌 Connecting to Deriv...");
-
     _channel = WebSocketChannel.connect(uri);
     _connected = true;
 
@@ -53,7 +54,6 @@ class DerivService {
       (msg) {
         try {
           final data = jsonDecode(msg);
-
           if (data is Map<String, dynamic>) {
             _handleMessage(data);
             _controller.add(data);
@@ -62,14 +62,20 @@ class DerivService {
           print("⚠ WS parse error: $e");
         }
       },
-      onError: (_) => _reconnect(),
-      onDone: () => _reconnect(),
+      onError: (err) {
+        print("⚠ WS error: $err");
+        _reconnect();
+      },
+      onDone: () {
+        print("⚠ WS closed");
+        _reconnect();
+      },
     );
 
     _send({"authorize": _token});
   }
 
-  /// ================= HANDLE =================
+  /// ================= HANDLE WS =================
   void _handleMessage(Map<String, dynamic> data) {
     final type = data['msg_type'];
 
@@ -77,30 +83,41 @@ class DerivService {
       case 'authorize':
         _authorized = true;
         print("✅ Authorized");
-
-        _send({"balance": 1, "subscribe": 1});
+        // Immediately request balance & active symbols
+        _send({"balance": 1});
         _send({"active_symbols": "brief", "product_type": "basic"});
+        break;
+
+      case 'balance':
+      case 'balance_response':
+        final balanceData = data['balance'] ?? data['balance_response'];
+        if (balanceData != null && balanceData['balance'] != null) {
+          _cachedBalance =
+              double.tryParse(balanceData['balance'].toString()) ?? 0.0;
+          print("💰 Cached balance updated: $_cachedBalance");
+        }
         break;
 
       case 'active_symbols':
         final raw = data['active_symbols'];
         if (raw is List) {
           _symbolMap.clear();
-
           for (final e in raw) {
             if (e['market'] == 'forex') {
-              final actual = e['symbol'];
-              final norm = _normalize(actual);
-              _symbolMap[norm] = actual;
+              final symbol = e['symbol'];
+              _symbolMap[symbol.toLowerCase()] = symbol;
             }
+          }
+          print("📌 Market pairs loaded: ${_symbolMap.values.join(', ')}");
+          for (var pair in _symbolMap.keys) {
+            subscribe(pair);
           }
         }
         break;
 
       case 'candles':
-        final symbol =
-            _normalize(data['echo_req']?['ticks_history'] ?? "");
-
+        final symbolRaw = (data['echo_req']?['ticks_history'] ?? "").toLowerCase();
+        final symbol = _symbolMap[symbolRaw] ?? symbolRaw;
         final candles = data['candles'] ?? [];
         final list = <model.Candle>[];
 
@@ -116,26 +133,21 @@ class DerivService {
         }
 
         _candles[symbol] = list;
-        print("📊 Candles loaded: ${list.length} for $symbol");
+        print("✅ Candles loaded: ${list.length} for $symbol");
         break;
 
       case 'tick':
         final tick = data['tick'];
         if (tick != null) {
-          final symbol = _normalize(tick['symbol']);
-          final price =
-              double.tryParse(tick['quote'].toString()) ?? 0.0;
-          final epoch =
-              int.tryParse(tick['epoch'].toString()) ?? 0;
+          final symbolRaw = tick['symbol'].toLowerCase();
+          final symbol = _symbolMap[symbolRaw] ?? symbolRaw;
+          final price = double.tryParse(tick['quote'].toString()) ?? 0.0;
+          final epoch = int.tryParse(tick['epoch'].toString()) ?? 0;
 
           _updateCandles(symbol, price, epoch);
 
-          /// contract updates
           for (var ctrl in _contractStreams.values) {
-            ctrl.add({
-              "price": price,
-              "epoch": epoch,
-            });
+            ctrl.add({"price": price, "epoch": epoch});
           }
         }
         break;
@@ -145,35 +157,25 @@ class DerivService {
   /// ================= SUBSCRIBE =================
   Future<void> subscribe(String symbol) async {
     if (!_connected) await connect();
+    if (_subscribed.contains(symbol)) return;
+    _subscribed.add(symbol);
 
-    final norm = _normalize(symbol);
-
-    if (_subscribed.contains(norm)) return;
-    _subscribed.add(norm);
-
-    final actual = _symbolMap[norm] ?? norm;
-
-    /// history
     await _sendAndWait("candles", {
-      "ticks_history": actual,
+      "ticks_history": _symbolMap[symbol.toLowerCase()] ?? symbol,
       "style": "candles",
       "granularity": 60,
       "count": 5000,
       "end": "latest",
     });
 
-    /// live
-    _send({
-      "ticks": actual,
-      "subscribe": 1,
-    });
-
-    print("📡 Subscribed: $norm");
+    _send({"ticks": _symbolMap[symbol.toLowerCase()] ?? symbol, "subscribe": 1});
+    print("📡 Subscribed: $symbol ✅");
   }
 
   /// ================= CANDLES =================
   List<model.Candle> getCandles(String pair) {
-    return _candles[_normalize(pair)] ?? [];
+    final actual = _symbolMap[pair.toLowerCase()] ?? pair;
+    return _candles[actual] ?? [];
   }
 
   Future<List<model.Candle>> getCandlesWithTF(String pair,
@@ -182,15 +184,18 @@ class DerivService {
   }
 
   /// ================= BALANCE =================
-  Future<double> getBalance() async {
-    final res = await _sendAndWait("balance", {"balance": 1});
-    return (res['balance']?['balance'] ?? 0).toDouble();
+  Future<double> getBalance({int waitMs = 5000}) async {
+    final start = DateTime.now();
+    while (_cachedBalance == 0.0 &&
+        DateTime.now().difference(start).inMilliseconds < waitMs) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    return _cachedBalance;
   }
 
   /// ================= TRADE =================
   Future<String?> buy(String pair, double stake, bool isBuy) async {
-    final symbol = _normalize(pair);
-    final actual = _symbolMap[symbol] ?? symbol;
+    final actual = _symbolMap[pair.toLowerCase()] ?? pair;
 
     final proposal = await _sendAndWait("proposal", {
       "proposal": 1,
@@ -205,16 +210,12 @@ class DerivService {
     final proposalId = proposal['proposal']?['id'];
     if (proposalId == null) return null;
 
-    final buy = await _sendAndWait("buy", {
-      "buy": proposalId,
-      "price": stake,
-    });
-
+    final buy = await _sendAndWait("buy", {"buy": proposalId, "price": stake});
     final contractId = buy['buy']?['contract_id']?.toString();
 
     if (contractId != null) {
       openTrades[contractId] = {
-        "pair": symbol,
+        "pair": pair,
         "stake": stake,
         "direction": isBuy ? "BUY" : "SELL"
       };
@@ -222,8 +223,6 @@ class DerivService {
 
     return contractId;
   }
-
-  /// ================= COMPATIBILITY =================
 
   Future<String?> placeTrade(String pair, bool isBuy,
       {double stake = 10}) async {
@@ -247,7 +246,7 @@ class DerivService {
   }
 
   Future<List<String>> getMarketPairs() async {
-    return _symbolMap.keys.toList();
+    return _symbolMap.values.toList();
   }
 
   /// ================= CONTRACT STREAM =================
@@ -257,19 +256,16 @@ class DerivService {
     final ctrl = _contractStreams.putIfAbsent(
         contractId,
         () => StreamController<Map<String, dynamic>>.broadcast());
-
     ctrl.stream.listen(onUpdate);
   }
 
   /// ================= UPDATE CANDLES =================
   void _updateCandles(String symbol, double price, int epoch) {
     final list = _candles.putIfAbsent(symbol, () => []);
-
     final bucket = (epoch ~/ 60) * 60;
 
     if (list.isEmpty || list.last.epoch != bucket) {
       final open = list.isNotEmpty ? list.last.close : price;
-
       list.add(model.Candle(
         epoch: bucket,
         open: open,
@@ -280,7 +276,6 @@ class DerivService {
       ));
     } else {
       final last = list.last;
-
       list[list.length - 1] = model.Candle(
         epoch: last.epoch,
         open: last.open,
@@ -297,12 +292,6 @@ class DerivService {
   }
 
   /// ================= UTILS =================
-  String _normalize(String s) {
-    s = s.replaceAll(RegExp(r'[^A-Za-z]'), '').toUpperCase();
-    if (!s.startsWith("FRX")) s = "FRX$s";
-    return s;
-  }
-
   void _send(Map<String, dynamic> data) {
     _channel?.sink.add(jsonEncode(data));
   }
@@ -314,8 +303,7 @@ class DerivService {
     late StreamSubscription sub;
 
     sub = stream.listen((event) {
-      if (event['msg_type'] == type &&
-          !completer.isCompleted) {
+      if (event['msg_type'] == type && !completer.isCompleted) {
         completer.complete(event);
         sub.cancel();
       }
@@ -345,8 +333,6 @@ class DerivService {
 
     if (_token != null) {
       await connect(_token!);
-
-      /// 🔥 RESUBSCRIBE
       for (var s in _subscribed) {
         subscribe(s);
       }
