@@ -1,4 +1,4 @@
-// ======================= services/deriv_service.dart (PRO VERSION BORESHA v4) =======================
+// ======================= services/deriv_service.dart (PRO VERSION BORESHA) =======================
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -17,11 +17,9 @@ class DerivService {
 
   WebSocketChannel? _channel;
   StreamSubscription? _wsSub;
-  Timer? _pingTimer;
 
   bool _authorized = false;
   bool _connected = false;
-  bool _reconnecting = false;
 
   final StreamController<Map<String, dynamic>> _controller =
       StreamController.broadcast();
@@ -76,14 +74,6 @@ class DerivService {
     );
 
     _send({"authorize": _token});
-    _startPing();
-  }
-
-  /// ================= PING =================
-  void _startPing() {
-    _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(
-        const Duration(seconds: 25), (_) => isConnected ? _send({"ping": 1}) : null);
   }
 
   /// ================= HANDLE WS MESSAGES =================
@@ -187,44 +177,9 @@ class DerivService {
     return _candles[actual] ?? [];
   }
 
-  /// ================= CANDLES WITH TIMEFRAME =================
   Future<List<model.Candle>> getCandlesWithTF(String pair,
       {int timeframe = 1}) async {
-    await subscribe(pair);
-    final allCandles = getCandles(pair);
-
-    if (timeframe <= 1) return allCandles;
-
-    final List<model.Candle> tfCandles = [];
-    for (var i = 0; i < allCandles.length; i += timeframe) {
-      final slice = allCandles.sublist(i, min(i + timeframe, allCandles.length));
-      if (slice.isEmpty) continue;
-
-      final first = slice.first;
-      final last = slice.last;
-      final high = slice.map((c) => c.high).reduce(max);
-      final low = slice.map((c) => c.low).reduce(min);
-      final volume = slice.map((c) => c.volume).reduce((a, b) => a + b);
-
-      tfCandles.add(model.Candle(
-        epoch: first.epoch,
-        open: first.open,
-        close: last.close,
-        high: high,
-        low: low,
-        volume: volume,
-      ));
-    }
-
-    return tfCandles;
-  }
-
-  /// ================= GET LAST PRICE =================
-  Future<double> getLastPrice(String pair) async {
-    await subscribe(pair); // ensure candles loaded
-    final candles = getCandles(pair);
-    if (candles.isNotEmpty) return candles.last.close;
-    return 0.0;
+    return getCandles(pair);
   }
 
   void _updateCandles(String symbol, double price, int epoch) {
@@ -268,12 +223,13 @@ class DerivService {
     return _cachedBalance;
   }
 
-  /// ================= TRADE =================
+
+  /// ================= TRADE (FULL PRO VERSION) =================
   Future<String?> placeTrade(String pair, bool isBuy,
       {double stake = 10, double multiplier = 50}) async {
     final actual = _symbolMap[pair.toLowerCase()] ?? pair;
 
-    // Request Proposal
+    // 1️⃣ Request Proposal
     final proposalResp = await _sendAndWait("proposal", {
       "proposal": 1,
       "amount": stake,
@@ -291,10 +247,16 @@ class DerivService {
     }
 
     final proposalId = proposal['id'];
-    final proposalPrice = proposal['display_value'] ?? proposal['ask_price'] ?? stake;
+    final proposalPrice = proposal['display_value'] ??
+        proposal['ask_price'] ??
+        stake; // fallback
 
-    // Buy Contract
-    final buyResp = await _sendAndWait("buy", {"buy": proposalId, "price": proposalPrice});
+    // 2️⃣ Buy Contract with Proposal Price
+    final buyResp = await _sendAndWait("buy", {
+      "buy": proposalId,
+      "price": proposalPrice,
+    });
+
     final contractId = buyResp['buy']?['contract_id']?.toString();
 
     if (contractId != null) {
@@ -311,8 +273,15 @@ class DerivService {
     return contractId;
   }
 
+  Future<double> getLastPrice(String pair) async {
+    final candles = getCandles(pair);
+    if (candles.isNotEmpty) return candles.last.close;
+    return 0.0;
+  }
+
   /// ================= CONTRACT STREAM =================
-  void subscribeContract(String contractId,
+  void subscribeContract(
+      String contractId,
       Function(Map<String, dynamic>) onUpdate) {
     final ctrl = _contractStreams.putIfAbsent(
         contractId,
@@ -362,9 +331,6 @@ class DerivService {
 
   /// ================= RECONNECT =================
   Future<void> _reconnect() async {
-    if (_reconnecting) return;
-    _reconnecting = true;
-
     print("🔁 Reconnecting...");
     _connected = false;
     _authorized = false;
@@ -378,7 +344,5 @@ class DerivService {
         subscribe(s);
       }
     }
-
-    _reconnecting = false;
   }
 }
