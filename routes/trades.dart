@@ -1,13 +1,12 @@
-// routes/trades.dart
+// ======================= routes/trades.dart (DEBUG PRO VERSION) =======================
+import 'dart:async';
 import 'dart:math';
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 
-/// ================= GLOBAL STORAGE =================
 final Map<String, Map<String, ActiveTrade>> _userTrades = {};
 final Map<String, bool> _tradeLocks = {};
 
-/// ================= ACTIVE TRADE MODEL =================
 class ActiveTrade {
   final bool buy;
   final double stake;
@@ -24,6 +23,9 @@ class ActiveTrade {
   bool partialClosed = false;
   bool closed = false;
 
+  DateTime lastAnalysis = DateTime.now();
+  List? cachedCandles;
+
   ActiveTrade({
     required this.buy,
     required this.stake,
@@ -37,9 +39,14 @@ class ActiveTrade {
   });
 }
 
-/// ================= ROUTE HANDLER =================
+/// ================= ROUTE =================
 Future<Response> onRequest(RequestContext context) async {
   final userId = context.request.headers['x-user-id'] ?? 'guest';
+
+  print("\n==================== REQUEST ====================");
+  print("👤 USER: $userId");
+  print("📡 METHOD: ${context.request.method}");
+  print("================================================\n");
 
   switch (context.request.method) {
     case HttpMethod.post:
@@ -47,70 +54,107 @@ Future<Response> onRequest(RequestContext context) async {
     case HttpMethod.get:
       return _getActiveTrades(userId);
     default:
-      return Response(statusCode: 405, body: 'Method Not Allowed');
+      return Response(statusCode: 405);
   }
 }
 
 /// ================= OPEN TRADE =================
 Future<Response> _openTrade(RequestContext context, String userId) async {
-  Map<String, dynamic> body = {};
+  Map<String, dynamic> body;
+
   try {
     body = await context.request.json();
-  } catch (_) {
-    return Response.json(
-      statusCode: 400,
-      body: {'error': 'Invalid JSON body'},
-    );
+    print("📥 CLIENT DATA: $body");
+  } catch (e) {
+    print("❌ JSON ERROR: $e");
+    return Response.json(statusCode: 400, body: {'error': 'Invalid JSON'});
   }
 
   final pairRaw = (body['pair'] as String?)?.toUpperCase();
   final action = (body['action'] as String?)?.toUpperCase();
   final stake = (body['stake'] as num?)?.toDouble();
 
+  print("🔍 Parsed -> pair:$pairRaw action:$action stake:$stake");
+
   if (pairRaw == null || action == null || stake == null) {
-    return Response.json(
-      statusCode: 400,
-      body: {'error': 'Missing parameters'},
-    );
+    print("❌ Missing params");
+    return Response.json(statusCode: 400, body: {'error': 'Missing params'});
   }
 
   final pair = _normalizePair(pairRaw);
   final trades = _userTrades.putIfAbsent(userId, () => {});
   final lockKey = '$userId:$pair';
 
+  print("🔐 LockKey: $lockKey");
+
   if (_tradeLocks[lockKey] == true) {
-    return Response.json(
-      statusCode: 429,
-      body: {'error': 'Trade already processing'},
-    );
+    print("⛔ Trade LOCKED");
+    return Response.json(statusCode: 429, body: {'error': 'Trade locked'});
   }
+
   _tradeLocks[lockKey] = true;
 
   try {
     if (trades.containsKey(pair)) {
-      return Response.json(
-        statusCode: 400,
-        body: {'error': 'Trade already active'},
-      );
+      print("⚠ Already active trade exists");
+      return Response.json(statusCode: 400, body: {'error': 'Already active'});
     }
 
     final deriv = DerivService.instance;
-    if (!deriv.isConnected) await deriv.connect();
 
-    // Place trade
-    final contractId = await deriv.placeTrade(pair, action == "BUY", stake: stake);
-    if (contractId == null) {
-      return Response.json(
-        statusCode: 500,
-        body: {'error': 'Trade failed'},
+    print("🔌 Checking Deriv connection...");
+    if (!deriv.isConnected) {
+      print("⚠ Not connected → connecting...");
+      await deriv.connect();
+    }
+    print("✅ Deriv connected");
+
+    /// ================= PLACE TRADE =================
+    String? contractId;
+
+    try {
+      print("📤 Sending trade to Deriv...");
+      print("➡ pair: $pair");
+      print("➡ action: $action");
+      print("➡ stake: $stake");
+
+      contractId = await deriv.placeTrade(
+        pair,
+        action == "BUY",
+        stake: stake,
       );
+
+      print("📥 Deriv RESPONSE contractId: $contractId");
+    } catch (e) {
+      print("❌ DERIV ERROR: $e");
+      _tradeLocks.remove(lockKey);
+      return Response.json(statusCode: 500, body: {'error': 'Deriv error'});
     }
 
-    final entryPrice = await deriv.getLastPrice(pair);
+    if (contractId == null) {
+      print("❌ Deriv returned NULL contractId");
+      _tradeLocks.remove(lockKey);
+      return Response.json(statusCode: 500, body: {'error': 'Trade failed'});
+    }
 
-    // ATR calculation
-    final candles = await deriv.getCandlesWithTF(pair);
-    final atr = _calcATR(candles, 14);
+    /// ================= ENTRY =================
+    double entryPrice = 0;
+    try {
+      entryPrice = await deriv.getLastPrice(pair);
+      print("📊 Entry price: $entryPrice");
+    } catch (e) {
+      print("⚠ Failed to fetch entry price: $e");
+    }
+
+    /// ================= ATR =================
+    double atr = 0.002;
+    try {
+      final candles = await deriv.getCandlesWithTF(pair);
+      atr = max(_calcATR(candles, 14), 0.0005);
+      print("📈 ATR: $atr");
+    } catch (e) {
+      print("⚠ ATR error: $e");
+    }
 
     final trade = ActiveTrade(
       buy: action == "BUY",
@@ -124,90 +168,100 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
     );
 
     trades[pair] = trade;
-    print("🚀 OPEN: $pair @ $entryPrice");
 
-    // Subscribe to live contract updates
-    deriv.subscribeContract(contractId, (tick) async {
+    print("🚀 TRADE STORED LOCALLY");
+
+    /// ================= SAFE CLOSE =================
+    Future<void> safeClose(double price) async {
+      if (trade.closed) return;
+
+      print("🔴 Closing trade...");
+      trade.closed = true;
+
       try {
-        if (trade.closed) return;
+        await deriv.closeTradeById(contractId!);
+        print("✅ Deriv CLOSE success");
+      } catch (e) {
+        print("⚠ Close failed, retry...");
+        await Future.delayed(const Duration(milliseconds: 300));
+        try {
+          await deriv.closeTradeById(contractId!);
+        } catch (e) {
+          print("❌ Close retry failed: $e");
+        }
+      }
 
-        final rawPrice = tick['price'] ?? tick['quote'] ?? 0;
-        final price = rawPrice is num ? rawPrice.toDouble() : double.tryParse('$rawPrice') ?? 0.0;
+      trades.remove(pair);
+      _tradeLocks.remove(lockKey);
+
+      print("✅ TRADE REMOVED LOCAL");
+    }
+
+    /// ================= LIVE MANAGEMENT =================
+    deriv.subscribeContract(contractId, (tick) async {
+      if (trade.closed) return;
+
+      try {
+        final raw = tick['price'] ?? tick['quote'] ?? 0;
+        final price = raw is num ? raw.toDouble() : double.tryParse('$raw') ?? 0;
+
+        if (price == 0) return;
+
         trade.currentPrice = price;
+
+        print("📡 TICK $pair → $price");
 
         final risk = max((trade.entryPrice - trade.sl).abs(), 0.00001);
         final rr = (price - trade.entryPrice).abs() / risk;
 
-        // Breakeven adjustment
-        if (!trade.breakeven && rr >= 1) {
-          trade.sl = trade.entryPrice;
-          trade.breakeven = true;
-          print("⚖ Breakeven: $pair");
-        }
-
-        // Partial close
-        if (!trade.partialClosed && rr >= 2) {
-          trade.partialClosed = true;
-          print("💰 Partial: $pair");
-        }
-
-        // Check TP/SL hit
-        final tpHit = (trade.buy && price >= trade.tp) || (!trade.buy && price <= trade.tp);
-        final slHit = (trade.buy && price <= trade.sl) || (!trade.buy && price >= trade.sl);
+        /// ================= EXIT CHECK =================
+        final tpHit = trade.buy ? price >= trade.tp : price <= trade.tp;
+        final slHit = trade.buy ? price <= trade.sl : price >= trade.sl;
 
         if (tpHit || slHit) {
-          await deriv.closeTradeById(contractId);
-          trade.closed = true;
-          trades.remove(pair);
-          _tradeLocks.remove(lockKey);
-          print("✅ CLOSED: $pair @ $price");
+          print("🎯 TP/SL HIT");
+          await safeClose(price);
         }
       } catch (e) {
-        print("⚠ Error in subscription: $e");
+        print("⚠ Tick error: $e");
       }
     });
 
     return Response.json(body: {
       'status': 'success',
-      'data': {
-        'pair': pair,
-        'action': action,
-        'stake': stake,
-        'contractId': contractId,
-        'entryPrice': trade.entryPrice,
-        'sl': trade.sl,
-        'tp': trade.tp,
-      },
+      'pair': pair,
+      'action': action,
+      'entry': entryPrice,
+      'sl': trade.sl,
+      'tp': trade.tp,
+      'contractId': contractId,
     });
-  } finally {
-    // Ensure lock is removed if trade not added
-    if (!_userTrades[userId]!.containsKey(pair)) {
-      _tradeLocks.remove(lockKey);
-    }
+  } catch (e) {
+    print("❌ SERVER ERROR: $e");
+    _tradeLocks.remove(lockKey);
+    return Response.json(statusCode: 500, body: {'error': 'Server error'});
   }
 }
 
-/// ================= GET ACTIVE TRADES =================
+/// ================= GET =================
 Future<Response> _getActiveTrades(String userId) async {
   final trades = _userTrades[userId] ?? {};
+
+  print("📊 FETCH TRADES for $userId → ${trades.length}");
+
   return Response.json(
     body: trades.values.map((t) => {
-          'contractId': t.contractId,
           'pair': t.pair,
           'buy': t.buy,
-          'stake': t.stake,
-          'entryPrice': t.entryPrice,
+          'entry': t.entryPrice,
           'sl': t.sl,
           'tp': t.tp,
-          'currentPrice': t.currentPrice,
-          'breakeven': t.breakeven,
-          'partialClosed': t.partialClosed,
-          'closed': t.closed,
+          'price': t.currentPrice,
         }).toList(),
   );
 }
 
-/// ================= ATR CALCULATION =================
+/// ================= ATR =================
 double _calcATR(List candles, int period) {
   if (candles.length < period + 1) return 0.002;
 
@@ -228,12 +282,9 @@ double _calcATR(List candles, int period) {
   return atr / period;
 }
 
-/// ================= PAIR NORMALIZATION =================
+/// ================= NORMALIZE =================
 String _normalizePair(String p) {
   p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
-  while (p.startsWith('FRXFRX')) {
-    p = p.substring(3);
-  }
-  if (!p.startsWith('FRX')) p = 'FRX$p';
+  if (!p.startsWith('FRX')) return 'FRX$p';
   return p;
 }
