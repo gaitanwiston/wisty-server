@@ -1,3 +1,4 @@
+// ======================= services/deriv_service.dart (PRO VERSION) =======================
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -26,15 +27,15 @@ class DerivService {
 
   final Map<String, List<model.Candle>> _candles = {};
   final Set<String> _subscribed = {};
-  final Map<String, String> _symbolMap = {}; // lowercase keys -> actual
+  final Map<String, String> _symbolMap = {}; // lowercase keys -> actual symbol
 
   final Map<String, Map<String, dynamic>> openTrades = {};
   final Map<String, StreamController<Map<String, dynamic>>> _contractStreams =
       {};
 
   String? _token;
-
   double _cachedBalance = 0.0;
+
   bool get isConnected => _authorized && _connected;
   double get cachedBalance => _cachedBalance;
 
@@ -75,15 +76,13 @@ class DerivService {
     _send({"authorize": _token});
   }
 
-  /// ================= HANDLE WS =================
+  /// ================= HANDLE WS MESSAGES =================
   void _handleMessage(Map<String, dynamic> data) {
     final type = data['msg_type'];
-
     switch (type) {
       case 'authorize':
         _authorized = true;
         print("✅ Authorized");
-        // Immediately request balance & active symbols
         _send({"balance": 1});
         _send({"active_symbols": "brief", "product_type": "basic"});
         break;
@@ -143,7 +142,6 @@ class DerivService {
           final symbol = _symbolMap[symbolRaw] ?? symbolRaw;
           final price = double.tryParse(tick['quote'].toString()) ?? 0.0;
           final epoch = int.tryParse(tick['epoch'].toString()) ?? 0;
-
           _updateCandles(symbol, price, epoch);
 
           for (var ctrl in _contractStreams.values) {
@@ -158,6 +156,7 @@ class DerivService {
   Future<void> subscribe(String symbol) async {
     if (!_connected) await connect();
     if (_subscribed.contains(symbol)) return;
+
     _subscribed.add(symbol);
 
     await _sendAndWait("candles", {
@@ -183,83 +182,6 @@ class DerivService {
     return getCandles(pair);
   }
 
-  /// ================= BALANCE =================
-  Future<double> getBalance({int waitMs = 5000}) async {
-    final start = DateTime.now();
-    while (_cachedBalance == 0.0 &&
-        DateTime.now().difference(start).inMilliseconds < waitMs) {
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
-    return _cachedBalance;
-  }
-
-  /// ================= TRADE =================
-  Future<String?> buy(String pair, double stake, bool isBuy) async {
-    final actual = _symbolMap[pair.toLowerCase()] ?? pair;
-
-    final proposal = await _sendAndWait("proposal", {
-      "proposal": 1,
-      "amount": stake,
-      "basis": "stake",
-      "contract_type": isBuy ? "MULTUP" : "MULTDOWN",
-      "currency": "USD",
-      "symbol": actual,
-      "multiplier": 50
-    });
-
-    final proposalId = proposal['proposal']?['id'];
-    if (proposalId == null) return null;
-
-    final buy = await _sendAndWait("buy", {"buy": proposalId, "price": stake});
-    final contractId = buy['buy']?['contract_id']?.toString();
-
-    if (contractId != null) {
-      openTrades[contractId] = {
-        "pair": pair,
-        "stake": stake,
-        "direction": isBuy ? "BUY" : "SELL"
-      };
-    }
-
-    return contractId;
-  }
-
-  Future<String?> placeTrade(String pair, bool isBuy,
-      {double stake = 10}) async {
-    return await buy(pair, stake, isBuy);
-  }
-
-  Future<double> getLastPrice(String pair) async {
-    final candles = getCandles(pair);
-    if (candles.isNotEmpty) return candles.last.close;
-    return 0.0;
-  }
-
-  Future<void> subscribeCandles(String pair) async {
-    await subscribe(pair);
-  }
-
-  Future<void> closeTradeById(String contractId) async {
-    _contractStreams[contractId]?.close();
-    _contractStreams.remove(contractId);
-    openTrades.remove(contractId);
-  }
-
-  Future<List<String>> getMarketPairs() async {
-    return _symbolMap.values.toList();
-  }
-
-  /// ================= CONTRACT STREAM =================
-  void subscribeContract(
-      String contractId,
-      Function(Map<String, dynamic>) onUpdate) {
-    final ctrl = _contractStreams.putIfAbsent(
-        contractId,
-        () => StreamController<Map<String, dynamic>>.broadcast());
-    ctrl.stream.listen(onUpdate);
-  }
-
-  /// ================= UPDATE CANDLES =================
   void _updateCandles(String symbol, double price, int epoch) {
     final list = _candles.putIfAbsent(symbol, () => []);
     final bucket = (epoch ~/ 60) * 60;
@@ -291,7 +213,74 @@ class DerivService {
     }
   }
 
-  /// ================= UTILS =================
+  /// ================= BALANCE =================
+  Future<double> getBalance({int waitMs = 5000}) async {
+    final start = DateTime.now();
+    while (_cachedBalance == 0.0 &&
+        DateTime.now().difference(start).inMilliseconds < waitMs) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    return _cachedBalance;
+  }
+
+  /// ================= TRADE =================
+  Future<String?> placeTrade(String pair, bool isBuy,
+      {double stake = 10, double multiplier = 50}) async {
+    final actual = _symbolMap[pair.toLowerCase()] ?? pair;
+    final proposal = await _sendAndWait("proposal", {
+      "proposal": 1,
+      "amount": stake,
+      "basis": "stake",
+      "contract_type": isBuy ? "MULTUP" : "MULTDOWN",
+      "currency": "USD",
+      "symbol": actual,
+      "multiplier": multiplier,
+    });
+
+    final proposalId = proposal['proposal']?['id'];
+    if (proposalId == null) return null;
+
+    final buyResp = await _sendAndWait("buy", {"buy": proposalId, "price": stake});
+    final contractId = buyResp['buy']?['contract_id']?.toString();
+
+    if (contractId != null) {
+      openTrades[contractId] = {
+        "pair": pair,
+        "stake": stake,
+        "direction": isBuy ? "BUY" : "SELL"
+      };
+    }
+
+    return contractId;
+  }
+
+  Future<double> getLastPrice(String pair) async {
+    final candles = getCandles(pair);
+    if (candles.isNotEmpty) return candles.last.close;
+    return 0.0;
+  }
+
+  /// ================= CONTRACT STREAM =================
+  void subscribeContract(
+      String contractId,
+      Function(Map<String, dynamic>) onUpdate) {
+    final ctrl = _contractStreams.putIfAbsent(
+        contractId,
+        () => StreamController<Map<String, dynamic>>.broadcast());
+    ctrl.stream.listen(onUpdate);
+  }
+
+  Future<void> closeTradeById(String contractId) async {
+    _contractStreams[contractId]?.close();
+    _contractStreams.remove(contractId);
+    openTrades.remove(contractId);
+  }
+
+  Future<List<String>> getMarketPairs() async {
+    return _symbolMap.values.toList();
+  }
+
+  /// ================= SEND HELPERS =================
   void _send(Map<String, dynamic> data) {
     _channel?.sink.add(jsonEncode(data));
   }
@@ -324,7 +313,6 @@ class DerivService {
   /// ================= RECONNECT =================
   Future<void> _reconnect() async {
     print("🔁 Reconnecting...");
-
     _connected = false;
     _authorized = false;
 

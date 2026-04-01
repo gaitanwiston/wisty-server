@@ -1,4 +1,4 @@
-// ======================= routes/trades.dart (DEBUG PRO VERSION) =======================
+// ======================= routes/trades.dart (DEBUG PRO PRO VERSION) =======================
 import 'dart:async';
 import 'dart:math';
 import 'package:dart_frog/dart_frog.dart';
@@ -11,7 +11,7 @@ class ActiveTrade {
   final bool buy;
   final double stake;
   final String contractId;
-  final String pair;
+  final String pair;       // Local system pair (FRXEURGBP)
   final String userId;
 
   double entryPrice;
@@ -58,10 +58,25 @@ Future<Response> onRequest(RequestContext context) async {
   }
 }
 
+/// ================= NORMALIZE FOR LOCAL STORAGE =================
+String _normalizePair(String p) {
+  p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+  if (!p.startsWith('FRX')) return 'FRX$p';
+  return p;
+}
+
+/// ================= DERIV SYMBOL =================
+String _toDerivSymbol(String pair) {
+  // Convert FRXEURGBP → frxEURGBP
+  if (pair.startsWith('FRX')) {
+    return 'frx${pair.substring(3)}';
+  }
+  return pair.toLowerCase();
+}
+
 /// ================= OPEN TRADE =================
 Future<Response> _openTrade(RequestContext context, String userId) async {
   Map<String, dynamic> body;
-
   try {
     body = await context.request.json();
     print("📥 CLIENT DATA: $body");
@@ -82,6 +97,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
   }
 
   final pair = _normalizePair(pairRaw);
+  final derivSymbol = _toDerivSymbol(pair);
   final trades = _userTrades.putIfAbsent(userId, () => {});
   final lockKey = '$userId:$pair';
 
@@ -111,15 +127,15 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
 
     /// ================= PLACE TRADE =================
     String? contractId;
-
     try {
       print("📤 Sending trade to Deriv...");
-      print("➡ pair: $pair");
+      print("➡ client pair: $pair");
+      print("➡ deriv pair: $derivSymbol");
       print("➡ action: $action");
       print("➡ stake: $stake");
 
       contractId = await deriv.placeTrade(
-        pair,
+        derivSymbol,
         action == "BUY",
         stake: stake,
       );
@@ -140,7 +156,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
     /// ================= ENTRY =================
     double entryPrice = 0;
     try {
-      entryPrice = await deriv.getLastPrice(pair);
+      entryPrice = await deriv.getLastPrice(derivSymbol);
       print("📊 Entry price: $entryPrice");
     } catch (e) {
       print("⚠ Failed to fetch entry price: $e");
@@ -149,7 +165,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
     /// ================= ATR =================
     double atr = 0.002;
     try {
-      final candles = await deriv.getCandlesWithTF(pair);
+      final candles = await deriv.getCandlesWithTF(derivSymbol);
       atr = max(_calcATR(candles, 14), 0.0005);
       print("📈 ATR: $atr");
     } catch (e) {
@@ -214,12 +230,33 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
         final risk = max((trade.entryPrice - trade.sl).abs(), 0.00001);
         final rr = (price - trade.entryPrice).abs() / risk;
 
+        /// ================= BREAKEVEN =================
+        if (!trade.breakeven && rr >= 1) {
+          trade.sl = trade.entryPrice;
+          trade.breakeven = true;
+          print("⚖ BREAKEVEN SET for $pair");
+        }
+
+        /// ================= PARTIAL FLAG (VIRTUAL) =================
+        if (!trade.partialClosed && rr >= 2) {
+          trade.partialClosed = true;
+          print("💰 PARTIAL PROFIT (virtual) for $pair");
+        }
+
+        /// ================= TRAILING STOP =================
+        if (rr >= 1.5) {
+          final newSL = trade.buy ? price - risk * 0.5 : price + risk * 0.5;
+          if (trade.buy && newSL > trade.sl) trade.sl = newSL;
+          if (!trade.buy && newSL < trade.sl) trade.sl = newSL;
+          print("🔁 TRAILING STOP UPDATED $pair → ${trade.sl}");
+        }
+
         /// ================= EXIT CHECK =================
         final tpHit = trade.buy ? price >= trade.tp : price <= trade.tp;
         final slHit = trade.buy ? price <= trade.sl : price >= trade.sl;
 
         if (tpHit || slHit) {
-          print("🎯 TP/SL HIT");
+          print("🎯 TP/SL HIT $pair");
           await safeClose(price);
         }
       } catch (e) {
@@ -243,7 +280,7 @@ Future<Response> _openTrade(RequestContext context, String userId) async {
   }
 }
 
-/// ================= GET =================
+/// ================= GET ACTIVE TRADES =================
 Future<Response> _getActiveTrades(String userId) async {
   final trades = _userTrades[userId] ?? {};
 
@@ -257,6 +294,9 @@ Future<Response> _getActiveTrades(String userId) async {
           'sl': t.sl,
           'tp': t.tp,
           'price': t.currentPrice,
+          'breakeven': t.breakeven,
+          'partial': t.partialClosed,
+          'closed': t.closed,
         }).toList(),
   );
 }
@@ -280,11 +320,4 @@ double _calcATR(List candles, int period) {
   }
 
   return atr / period;
-}
-
-/// ================= NORMALIZE =================
-String _normalizePair(String p) {
-  p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
-  if (!p.startsWith('FRX')) return 'FRX$p';
-  return p;
 }
