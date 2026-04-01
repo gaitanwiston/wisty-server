@@ -1,4 +1,4 @@
-// ======================= services/deriv_service.dart (PRO VERSION BORESHA) =======================
+// ======================= services/deriv_service.dart (PRO VERSION DEBUG FULL) =======================
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -223,11 +223,19 @@ class DerivService {
     return _cachedBalance;
   }
 
+  /// ================= GET LAST PRICE =================
+  Future<double> getLastPrice(String pair) async {
+    final actual = _symbolMap[pair.toLowerCase()] ?? pair;
+    final candles = _candles[actual] ?? [];
+    if (candles.isNotEmpty) return candles.last.close;
+    return 0.0;
+  }
 
-  /// ================= TRADE (FULL PRO VERSION) =================
+  /// ================= TRADE (FULL PRO VERSION DEBUG) =================
   Future<String?> placeTrade(String pair, bool isBuy,
       {double stake = 10, double multiplier = 50}) async {
     final actual = _symbolMap[pair.toLowerCase()] ?? pair;
+    print("💡 Placing trade -> pair: $pair | actual: $actual | isBuy: $isBuy | stake: $stake | multiplier: $multiplier");
 
     // 1️⃣ Request Proposal
     final proposalResp = await _sendAndWait("proposal", {
@@ -240,22 +248,27 @@ class DerivService {
       "multiplier": multiplier,
     });
 
+    print("📥 Proposal response: $proposalResp");
+
     final proposal = proposalResp['proposal'];
     if (proposal == null) {
-      print("❌ Proposal failed for $pair");
+      print("❌ Proposal failed for $pair. Full response:");
+      print(proposalResp);
       return null;
     }
 
     final proposalId = proposal['id'];
-    final proposalPrice = proposal['display_value'] ??
-        proposal['ask_price'] ??
-        stake; // fallback
+    final proposalPrice = proposal['display_value'] ?? proposal['ask_price'] ?? stake;
+
+    print("💡 Proposal ID: $proposalId | price: $proposalPrice");
 
     // 2️⃣ Buy Contract with Proposal Price
     final buyResp = await _sendAndWait("buy", {
       "buy": proposalId,
       "price": proposalPrice,
     });
+
+    print("📥 Buy response: $buyResp");
 
     final contractId = buyResp['buy']?['contract_id']?.toString();
 
@@ -267,16 +280,41 @@ class DerivService {
       };
       print("✅ Trade placed: $contractId");
     } else {
-      print("❌ Buy failed for $pair, proposal price used: $proposalPrice");
+      print("❌ Buy failed for $pair, proposal price used: $proposalPrice. Full response:");
+      print(buyResp);
     }
 
     return contractId;
   }
 
-  Future<double> getLastPrice(String pair) async {
-    final candles = getCandles(pair);
-    if (candles.isNotEmpty) return candles.last.close;
-    return 0.0;
+  /// ================= SEND AND WAIT (DEBUG VERSION) =================
+  Future<Map<String, dynamic>> _sendAndWait(
+      String type, Map<String, dynamic> data,
+      {int timeout = 15}) async {
+    final completer = Completer<Map<String, dynamic>>();
+    late StreamSubscription sub;
+
+    sub = stream.listen((event) {
+      if (!completer.isCompleted && event['msg_type'] == type) {
+        completer.complete(event);
+        sub.cancel();
+      }
+    });
+
+    print("📤 Sending request ($type): $data");
+    _send(data);
+
+    Future.delayed(Duration(seconds: timeout), () {
+      if (!completer.isCompleted) {
+        print("⏱ Timeout waiting for $type response. Returning empty map.");
+        completer.complete({});
+        sub.cancel();
+      }
+    });
+
+    final resp = await completer.future;
+    print("📥 Received response ($type): $resp");
+    return resp;
   }
 
   /// ================= CONTRACT STREAM =================
@@ -302,31 +340,6 @@ class DerivService {
   /// ================= SEND HELPERS =================
   void _send(Map<String, dynamic> data) {
     _channel?.sink.add(jsonEncode(data));
-  }
-
-  Future<Map<String, dynamic>> _sendAndWait(
-      String type, Map<String, dynamic> data,
-      {int timeout = 15}) async {
-    final completer = Completer<Map<String, dynamic>>();
-    late StreamSubscription sub;
-
-    sub = stream.listen((event) {
-      if (event['msg_type'] == type && !completer.isCompleted) {
-        completer.complete(event);
-        sub.cancel();
-      }
-    });
-
-    _send(data);
-
-    Future.delayed(Duration(seconds: timeout), () {
-      if (!completer.isCompleted) {
-        completer.complete({});
-        sub.cancel();
-      }
-    });
-
-    return completer.future;
   }
 
   /// ================= RECONNECT =================
