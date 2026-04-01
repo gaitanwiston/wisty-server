@@ -233,59 +233,59 @@ class DerivService {
 
   /// ================= TRADE (FULL PRO VERSION DEBUG) =================
   Future<String?> placeTrade(String pair, bool isBuy,
-      {double stake = 10, double multiplier = 50}) async {
-    final actual = _symbolMap[pair.toLowerCase()] ?? pair;
-    print("💡 Placing trade -> pair: $pair | actual: $actual | isBuy: $isBuy | stake: $stake | multiplier: $multiplier");
-
-    // 1️⃣ Request Proposal
-    final proposalResp = await _sendAndWait("proposal", {
-      "proposal": 1,
-      "amount": stake,
-      "basis": "stake",
-      "contract_type": isBuy ? "MULTUP" : "MULTDOWN",
-      "currency": "USD",
-      "symbol": actual,
-      "multiplier": multiplier,
-    });
-
-    print("📥 Proposal response: $proposalResp");
-
-    final proposal = proposalResp['proposal'];
-    if (proposal == null) {
-      print("❌ Proposal failed for $pair. Full response:");
-      print(proposalResp);
-      return null;
-    }
-
-    final proposalId = proposal['id'];
-    final proposalPrice = proposal['display_value'] ?? proposal['ask_price'] ?? stake;
-
-    print("💡 Proposal ID: $proposalId | price: $proposalPrice");
-
-    // 2️⃣ Buy Contract with Proposal Price
-    final buyResp = await _sendAndWait("buy", {
-      "buy": proposalId,
-      "price": proposalPrice,
-    });
-
-    print("📥 Buy response: $buyResp");
-
-    final contractId = buyResp['buy']?['contract_id']?.toString();
-
-    if (contractId != null) {
-      openTrades[contractId] = {
-        "pair": pair,
-        "stake": stake,
-        "direction": isBuy ? "BUY" : "SELL",
-      };
-      print("✅ Trade placed: $contractId");
-    } else {
-      print("❌ Buy failed for $pair, proposal price used: $proposalPrice. Full response:");
-      print(buyResp);
-    }
-
-    return contractId;
+    {double stake = 10, double multiplier = 100}) async {
+  // Ensure multiplier is one of the acceptable values
+  const validMultipliers = [100, 200, 300, 500, 800];
+  if (!validMultipliers.contains(multiplier.toInt())) {
+    multiplier = 100; // fallback
   }
+
+  final actual = _symbolMap[pair.toLowerCase()] ?? pair;
+  print("💡 Placing trade -> pair: $pair | actual: $actual | isBuy: $isBuy | stake: $stake | multiplier: $multiplier");
+
+  final proposalResp = await _sendAndWait("proposal", {
+    "proposal": 1,
+    "amount": stake,
+    "basis": "stake",
+    "contract_type": isBuy ? "MULTUP" : "MULTDOWN",
+    "currency": "USD",
+    "symbol": actual,
+    "multiplier": multiplier,
+  });
+
+  print("📥 Proposal response: $proposalResp");
+
+  final proposal = proposalResp['proposal'];
+  if (proposal == null) {
+    print("❌ Proposal failed for $pair. Full response:");
+    print(proposalResp);
+    return null;
+  }
+
+  final proposalId = proposal['id'];
+  final proposalPrice = proposal['display_value'] ?? proposal['ask_price'] ?? stake;
+
+  final buyResp = await _sendAndWait("buy", {
+    "buy": proposalId,
+    "price": proposalPrice,
+  });
+
+  final contractId = buyResp['buy']?['contract_id']?.toString();
+
+  if (contractId != null) {
+    openTrades[contractId] = {
+      "pair": pair,
+      "stake": stake,
+      "direction": isBuy ? "BUY" : "SELL",
+    };
+    print("✅ Trade placed: $contractId");
+  } else {
+    print("❌ Buy failed for $pair, proposal price used: $proposalPrice. Full response:");
+    print(buyResp);
+  }
+
+  return contractId;
+}
 
   /// ================= SEND AND WAIT (DEBUG VERSION) =================
   Future<Map<String, dynamic>> _sendAndWait(
