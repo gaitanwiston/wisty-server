@@ -1,4 +1,4 @@
-// ======================= services/deriv_service.dart (PRO VERSION) =======================
+// ======================= services/deriv_service.dart (PRO VERSION BORESHA) =======================
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -223,11 +223,13 @@ class DerivService {
     return _cachedBalance;
   }
 
-  /// ================= TRADE =================
+  /// ================= TRADE (BORESHA) =================
   Future<String?> placeTrade(String pair, bool isBuy,
       {double stake = 10, double multiplier = 50}) async {
     final actual = _symbolMap[pair.toLowerCase()] ?? pair;
-    final proposal = await _sendAndWait("proposal", {
+
+    // 1️⃣ Request Proposal
+    final proposalResp = await _sendAndWait("proposal", {
       "proposal": 1,
       "amount": stake,
       "basis": "stake",
@@ -237,18 +239,32 @@ class DerivService {
       "multiplier": multiplier,
     });
 
-    final proposalId = proposal['proposal']?['id'];
-    if (proposalId == null) return null;
+    final proposal = proposalResp['proposal'];
+    if (proposal == null) {
+      print("❌ Proposal failed for $pair");
+      return null;
+    }
 
-    final buyResp = await _sendAndWait("buy", {"buy": proposalId, "price": stake});
+    final proposalId = proposal['id'];
+    final proposalPrice = proposal['display_value'] ?? proposal['ask_price'] ?? stake;
+
+    // 2️⃣ Buy Contract with Proposal Price
+    final buyResp = await _sendAndWait("buy", {
+      "buy": proposalId,
+      "price": proposalPrice
+    });
+
     final contractId = buyResp['buy']?['contract_id']?.toString();
 
     if (contractId != null) {
       openTrades[contractId] = {
         "pair": pair,
         "stake": stake,
-        "direction": isBuy ? "BUY" : "SELL"
+        "direction": isBuy ? "BUY" : "SELL",
       };
+      print("✅ Trade placed: $contractId");
+    } else {
+      print("❌ Buy failed for $pair, proposal price used: $proposalPrice");
     }
 
     return contractId;
@@ -287,7 +303,7 @@ class DerivService {
 
   Future<Map<String, dynamic>> _sendAndWait(
       String type, Map<String, dynamic> data,
-      {int timeout = 10}) async {
+      {int timeout = 15}) async {
     final completer = Completer<Map<String, dynamic>>();
     late StreamSubscription sub;
 
