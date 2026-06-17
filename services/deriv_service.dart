@@ -15,13 +15,14 @@ class DerivService {
   static final DerivService instance = DerivService._internal();
   DerivService._internal();
 
+  factory DerivService() => instance;
+
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
 
   bool _connected = false;
   bool _auth = false;
   bool _connecting = false;
-  bool _reconnecting = false;
 
   String? _token;
 
@@ -39,67 +40,80 @@ class DerivService {
 
   bool get isConnected => _connected && _auth;
 
-  // ================= CONNECT =================
-  Future<void> connect([String? token]) async {
-    if (_connecting) return;
-    if (_connected && _auth) return;
+  // ================= SYMBOL NORMALIZER =================
+  String normalizeSymbol(String raw) {
+    String s = raw.trim().toUpperCase();
+    s = s.replaceAll(RegExp(r'[^A-Z0-9]'), '');
 
-    _connecting = true;
-
-    try {
-      _token = token ?? derivToken;
-
-      final uri = Uri.parse(
-        "wss://ws.derivws.com/websockets/v3?app_id=$derivAppId",
-      );
-
-      print("🔌 CONNECTING TO DERIV...");
-
-      _channel = WebSocketChannel.connect(uri);
-
-      _sub?.cancel();
-      _sub = _channel!.stream.listen(
-        (msg) {
-          final data = jsonDecode(msg);
-
-          if (data is Map<String, dynamic>) {
-            _handle(data);
-            _stream.add(data);
-          }
-        },
-        onError: (e) {
-          print("❌ SOCKET ERROR: $e");
-          _connected = false;
-          _auth = false;
-          _reconnect();
-        },
-        onDone: () {
-          print("⚠ SOCKET CLOSED");
-          _connected = false;
-          _auth = false;
-          _reconnect();
-        },
-      );
-
-      _connected = true;
-      _auth = false;
-
-      _send({"authorize": _token});
-    } catch (e) {
-      print("❌ CONNECT FAILED: $e");
-      _connected = false;
-      _auth = false;
-    } finally {
-      _connecting = false;
+    while (s.startsWith('FRXFRX')) {
+      s = s.substring(3);
     }
+
+    if (!s.startsWith('FRX')) {
+      s = 'FRX$s';
+    }
+
+    return s;
   }
+
+  // ================= CONNECT =================
+Future<void> connect([String? token]) async {
+  if (_connected || _connecting) return;
+
+  _connecting = true;
+
+  try {
+    _token = token ?? derivToken;
+
+    final uri = Uri.parse(
+      "wss://ws.derivws.com/websockets/v3?app_id=$derivAppId",
+    );
+
+    print("🔌 CONNECTING TO DERIV...");
+
+    _channel = WebSocketChannel.connect(uri);
+
+    _sub = _channel!.stream.listen(
+      (msg) {
+        final data = jsonDecode(msg);
+
+        if (data is Map<String, dynamic>) {
+          _handle(data);
+          _stream.add(data);
+        }
+      },
+      onError: (e) {
+        print("❌ SOCKET ERROR: $e");
+        _connected = false;
+        _auth = false;
+        _reconnect();
+      },
+      onDone: () {
+        print("⚠️ SOCKET CLOSED");
+        _connected = false;
+        _auth = false;
+        _reconnect();
+      },
+    );
+
+    _connected = true;
+    _auth = false;
+
+    _send({"authorize": _token});
+  } catch (e) {
+    print("❌ CONNECT FAILED: $e");
+    _connected = false;
+    _auth = false;
+  } finally {
+    _connecting = false;
+  }
+}
 
   // ================= HANDLE =================
   void _handle(Map<String, dynamic> data) {
     switch (data["msg_type"]) {
       case "authorize":
         _auth = true;
-        print("✅ AUTH SUCCESS");
         break;
 
       case "balance":
@@ -134,12 +148,13 @@ class DerivService {
         _data[symbol]![tf] = list;
         break;
 
-      case "proposal_open_contract":
-      case "contract_update":
-      case "tick":
-        final id = data["contract_id"]?.toString();
-        if (id != null && _contracts[id] != null) {
-          _contracts[id]!.add(data);
+      case "active_symbols":
+        final list = data["active_symbols"] as List? ?? [];
+        _marketPairs.clear();
+
+        for (final p in list) {
+          final symbol = p["symbol"];
+          if (symbol != null) _marketPairs.add(symbol);
         }
         break;
     }
@@ -147,55 +162,29 @@ class DerivService {
 
   // ================= SEND =================
   void _send(Map<String, dynamic> data) {
-    if (!_connected || !_auth) return;
     _channel?.sink.add(jsonEncode(data));
   }
 
-  // ================= SYMBOL =================
-  String normalizeSymbol(String raw) {
-    String s = raw.trim().toUpperCase();
-    s = s.replaceAll(RegExp(r'[^A-Z0-9]'), '');
-
-    while (s.startsWith('FRXFRX')) {
-      s = s.substring(3);
-    }
-
-    if (!s.startsWith('FRX')) {
-      s = 'FRX$s';
-    }
-
-    return s;
+  // ================= GET CANDLES =================
+  List<model.Candle> getCandles(String symbolRaw, TF tf) {
+    final symbol = normalizeSymbol(symbolRaw);
+    return _data[symbol]?[tf] ?? [];
   }
 
-  // ================= READY =================
-  Future<void> ensureReady() async {
-    if (!isConnected) {
-      await connect();
-    }
-
-    int i = 0;
-    while (!_auth && i < 20) {
-      await Future.delayed(const Duration(milliseconds: 200));
-      i++;
-    }
-  }
-
-  // ================= BALANCE =================
-  double get cachedBalance => _balanceCache["main"] ?? 0;
-
-  Future<double> getBalance() async {
-    await ensureReady();
-    _send({"balance": 1});
+  Future<List<model.Candle>> getCandlesWithTF(
+    String symbolRaw, {
+    TF timeframe = TF.m1,
+  }) async {
+    await subscribe(symbolRaw);
     await Future.delayed(const Duration(seconds: 2));
-    return cachedBalance;
+    return getCandles(symbolRaw, timeframe);
   }
 
-  // ================= CANDLES =================
+  // ================= SUBSCRIBE CANDLES =================
   Future<void> subscribe(String symbolRaw) async {
     final symbol = normalizeSymbol(symbolRaw);
 
-    await ensureReady();
-
+    if (!_connected) await connect();
     if (_subscribed.contains(symbol)) return;
 
     _subscribed.add(symbol);
@@ -204,46 +193,57 @@ class DerivService {
       "ticks_history": symbol,
       "style": "candles",
       "granularity": 60,
-      "count": 500,
+      "count": 1000,
       "end": "latest",
       "adjust_start_time": 1
     });
   }
-Future<List<model.Candle>> getCandlesWithTF(
-  String symbolRaw, {
-  TF timeframe = TF.m1,
-}) async {
-  await ensureReady();
 
-  await subscribe(symbolRaw);
-
-  // give websocket time to push candles
-  await Future.delayed(const Duration(seconds: 2));
-
-  return getCandles(symbolRaw, timeframe);
+  void subscribeCandles(String symbolRaw) {
+    subscribe(symbolRaw);
+  }
+bool isSubscribed(String symbolRaw) {
+  final symbol = normalizeSymbol(symbolRaw);
+  return _subscribed.contains(symbol);
 }
-  List<model.Candle> getCandles(String symbolRaw, TF tf) {
-    final symbol = normalizeSymbol(symbolRaw);
-    return _data[symbol]?[tf] ?? [];
+  // ================= BALANCE =================
+  double get cachedBalance => _balanceCache["main"] ?? 0;
+
+  Future<double> getBalance() async {
+    _send({"balance": 1});
+    await Future.delayed(const Duration(seconds: 2));
+    return cachedBalance;
   }
 
-  Future<double> getLastPrice(String symbolRaw) async {
-    final symbol = normalizeSymbol(symbolRaw);
+  // ================= LAST PRICE (FIXED - REQUIRED) =================
+Future<double> getLastPrice(String symbolRaw) async {
+  final symbol = normalizeSymbol(symbolRaw);
 
+  if (!isConnected) {
+    print("❌ NOT CONNECTED");
+    return 0.0;
+  }
+
+  final candles = getCandles(symbol, TF.m1);
+
+  if (candles.isEmpty) {
+    print("⚠️ NO CANDLES -> $symbol (subscribing)");
     await subscribe(symbol);
 
-    final candles = getCandles(symbol, TF.m1);
-    return candles.isNotEmpty ? candles.last.close : 0.0;
+    await Future.delayed(const Duration(seconds: 2));
+
+    final retry = getCandles(symbol, TF.m1);
+    return retry.isNotEmpty ? retry.last.close : 0.0;
   }
 
+  return candles.last.close;
+}
   // ================= TRADE =================
   Future<String?> placeTrade(
     String pair,
     bool isBuy, {
     double stake = 10,
   }) async {
-    await ensureReady();
-
     final symbol = normalizeSymbol(pair);
 
     final proposal = await _sendAndWait("proposal", {
@@ -266,7 +266,7 @@ Future<List<model.Candle>> getCandlesWithTF(
     return buy["buy"]?["contract_id"]?.toString();
   }
 
-  // ================= CONTRACT STREAM =================
+  // ================= CONTRACT =================
   StreamSubscription subscribeContract(
     String id,
     Function(Map<String, dynamic>) onUpdate,
@@ -276,27 +276,15 @@ Future<List<model.Candle>> getCandlesWithTF(
       () => StreamController<Map<String, dynamic>>.broadcast(),
     );
 
-    _send({
-      "proposal_open_contract": 1,
-      "contract_id": id,
-      "subscribe": 1
-    });
-
     return ctrl.stream.listen(onUpdate);
   }
 
   Future<void> closeTradeById(String id) async {
-    _send({
-      "proposal_open_contract": 1,
-      "contract_id": id,
-      "cancel": 1
-    });
-
     await _contracts[id]?.close();
     _contracts.remove(id);
   }
 
-  // ================= WAIT =================
+  // ================= SEND AND WAIT =================
   Future<Map<String, dynamic>> _sendAndWait(
     String type,
     Map<String, dynamic> data,
@@ -318,31 +306,55 @@ Future<List<model.Candle>> getCandlesWithTF(
 
   // ================= RECONNECT =================
   Future<void> _reconnect() async {
-    if (_reconnecting) return;
+  _connected = false;
+  _auth = false;
 
-    _reconnecting = true;
+  print("🔄 Reconnecting in 5s...");
 
-    _connected = false;
-    _auth = false;
+  await Future.delayed(const Duration(seconds: 5));
 
-    print("🔄 Reconnecting in 5s...");
-
-    await Future.delayed(const Duration(seconds: 5));
-
-    _reconnecting = false;
-
+  try {
     await connect(_token);
+  } catch (e) {
+    print("❌ RECONNECT FAILED: $e");
   }
+}
+Future<List<String>> getMarketPairs() async {
+  if (_marketPairs.isEmpty) {
+    _send({"active_symbols": "brief"});
+    await Future.delayed(const Duration(seconds: 2));
+  }
+  return _marketPairs;
+}
+bool _isReady = false;
+bool _isConnecting = false;
 
-  // ================= MARKET =================
-  Future<List<String>> getMarketPairs() async {
-    if (_marketPairs.isEmpty) {
-      _send({"active_symbols": "brief"});
-      await Future.delayed(const Duration(seconds: 2));
+Future<void> ensureReady() async {
+  if (_isReady) return;
+
+  if (_isConnecting) {
+    // subiri connection iliyopo
+    while (_isConnecting) {
+      await Future.delayed(const Duration(milliseconds: 100));
     }
-    return _marketPairs;
+    return;
   }
 
+  _isConnecting = true;
+
+  try {
+    // kama una init ya websocket/broker hapa
+    await connect(); // au init() kulingana na service yako
+
+    _isReady = true;
+  } catch (e) {
+    _isReady = false;
+    rethrow;
+  } finally {
+    _isConnecting = false;
+  }
+}
+  // ================= TF MAP =================
   TF _mapTF(int g) {
     switch (g) {
       case 3600:
@@ -356,11 +368,5 @@ Future<List<model.Candle>> getCandlesWithTF(
       default:
         return TF.m1;
     }
-  }
-
-  void dispose() {
-    _sub?.cancel();
-    _channel?.sink.close();
-    _stream.close();
   }
 }
