@@ -64,12 +64,39 @@ class ActiveTrade {
 
 /// ================= ENTRY POINT =================
 Future<Response> onRequest(RequestContext context) async {
-  if (context.request.method != HttpMethod.post) {
-    return Response(statusCode: 405);
+
+  // ================= GET ACTIVE TRADES =================
+
+  if (context.request.method == HttpMethod.get) {
+    return Response.json(
+      body: {
+        "success": true,
+        "count": _activeTrades.length,
+        "trades": _activeTrades.values.map((t) {
+          return {
+            "contractId": t.contractId,
+            "pair": t.pair,
+            "buy": t.buy,
+            "entry": t.entry,
+            "sl": t.sl,
+            "tp": t.tp,
+            "current": t.current,
+            "breakeven": t.breakeven,
+            "closed": t.closed,
+          };
+        }).toList(),
+      },
+    );
   }
 
-  final body = await context.request.json();
-  return _handleSignal(body);
+  // ================= NEW SIGNAL =================
+
+  if (context.request.method == HttpMethod.post) {
+    final body = await context.request.json();
+    return _handleSignal(body);
+  }
+
+  return Response(statusCode: 405);
 }
 
 /// ================= BALANCE =================
