@@ -2,8 +2,6 @@ import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 import '../models/candle.dart';
 
-/// ================= HELPERS =================
-/// Safely parse epoch to seconds
 int _parseEpoch(dynamic epoch) {
   if (epoch is int) return epoch;
   if (epoch is double) return epoch.toInt();
@@ -11,88 +9,69 @@ int _parseEpoch(dynamic epoch) {
   return 0;
 }
 
-/// Normalize pair (FRX prefix) for Deriv API
 String _normalizePair(String p) {
-  p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
-  while (p.startsWith('FRXFRX')) {
-    p = p.substring(3);
+  String s = p.trim().replaceAll(' ', '');
+
+  while (s.toUpperCase().startsWith('FRXFRX')) {
+    s = s.substring(3);
   }
-  if (!p.startsWith('FRX')) {
-    p = 'FRX$p';
+
+  if (!s.toUpperCase().startsWith('FRX')) {
+    s = 'FRX$s';
   }
-  return p;
+
+  return s;
 }
 
-/// ================= ROUTE HANDLER =================
 Future<Response> onRequest(RequestContext context) async {
-  final nowIso = DateTime.now().toUtc().toIso8601String();
+  final now = DateTime.now().toUtc().toIso8601String();
 
-  // Parse pair & timeframe
-  final rawPair = context.request.uri.queryParameters['pair'] ?? 'EURUSD';
-  final pair = _normalizePair(rawPair);
-  final timeframe =
-      int.tryParse(context.request.uri.queryParameters['timeframe'] ?? '1') ?? 1;
+  final rawPairs = context.request.uri.queryParameters['pairs'];
 
-  if (timeframe <= 0) {
-    return Response.json(
-      statusCode: 400,
-      body: {'success': false, 'error': 'Invalid timeframe'},
-    );
+  if (rawPairs == null || rawPairs.isEmpty) {
+    return Response.json(body: {
+      "success": false,
+      "error": "pairs parameter required"
+    });
   }
 
-  print("📊 /candles hit → $pair TF:$timeframe at $nowIso");
+  final pairs = rawPairs.split(',').map(_normalizePair).toList();
 
-  try {
-    final deriv = DerivService.instance;
+  final deriv = DerivService.instance;
 
-    if (!deriv.isConnected) {
-      print("🔌 Connecting to Deriv WebSocket...");
-      await deriv.connect();
-      print("✅ Connected to Deriv");
-    }
+  if (!deriv.isConnected) {
+    await deriv.connect();
+  }
 
-    // Fetch candles
-    final candleList = await deriv.getCandlesWithTF(pair, timeframe: timeframe);
+  final result = <String, dynamic>{};
 
-    // Map candles safely
-    final candleData = candleList.map((c) {
-      final epochSeconds = _parseEpoch(c.epoch);
+  for (final pair in pairs) {
+    await deriv.subscribe(pair);
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    final candles = await deriv.getCandlesWithTF(pair);
+
+    result[pair] = candles.map((c) {
+      final epoch = _parseEpoch(c.epoch);
+
       return {
-        'time': DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000, isUtc: true)
-            .toIso8601String(),
-        'open': c.open,
-        'high': c.high,
-        'low': c.low,
-        'close': c.close,
-        'volume': c.volume ?? 0, // ensure volume exists
+        "time": DateTime.fromMillisecondsSinceEpoch(
+          epoch * 1000,
+          isUtc: true,
+        ).toIso8601String(),
+        "open": c.open,
+        "high": c.high,
+        "low": c.low,
+        "close": c.close,
+        "volume": c.volume,
       };
     }).toList();
-
-    // Logging summary
-    print("✅ Fetched ${candleData.length} candles for $pair");
-
-    return Response.json(
-      body: {
-        'success': true,
-        'pair': pair,
-        'timeframe': timeframe,
-        'count': candleData.length,
-        'candles': candleData,
-        'timestamp': nowIso,
-      },
-    );
-  } catch (e, st) {
-    print("💥 /candles error for $pair: $e");
-    print(st);
-
-    return Response.json(
-      statusCode: 500,
-      body: {
-        'success': false,
-        'error': 'Failed to fetch candles',
-        'message': e.toString(),
-        'timestamp': nowIso,
-      },
-    );
   }
+
+  return Response.json(body: {
+    "success": true,
+    "count": pairs.length,
+    "data": result,
+    "timestamp": now
+  });
 }

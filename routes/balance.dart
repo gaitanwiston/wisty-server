@@ -1,4 +1,3 @@
-// routes/balance.dart
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 
@@ -6,45 +5,21 @@ Future<Response> onRequest(RequestContext context) async {
   final deriv = DerivService.instance;
   final nowIso = DateTime.now().toUtc().toIso8601String();
 
-  print("⚡ /balance route hit at $nowIso");
+  print("⚡ /balance hit → $nowIso");
 
   try {
-    // 1️⃣ Ensure WebSocket connection
+    // ================= CONNECT =================
     if (!deriv.isConnected) {
-      print("🔌 Connecting to Deriv WebSocket...");
-      try {
-        await deriv.connect(); // uses default token if none provided
-        print("✅ Connected to Deriv WebSocket");
-      } catch (e) {
-        print("💥 Failed to connect WebSocket: $e");
-        return Response.json(
-          statusCode: 500,
-          body: {
-            "success": false,
-            "balance": 0.0,
-            "timestamp": nowIso,
-            "error": "Failed to connect to Deriv WebSocket: $e",
-          },
-        );
-      }
+      print("🔌 Connecting to Deriv...");
+      await deriv.connect();
+      print("✅ Connected");
     }
 
-    // 2️⃣ Fetch balance (use cached first if available)
-    double balance = deriv.cachedBalance;
-    if (balance == 0.0) {
-      print("⏳ Cached balance empty, fetching from Deriv...");
-      try {
-        // Wait max 5 seconds for balance to update
-        balance = await deriv.getBalance(waitMs: 5000);
-      } catch (e) {
-        print("⚠ Failed to fetch balance: $e");
-        balance = 0.0;
-      }
-    }
+    // ================= FETCH BALANCE =================
+    final balance = await deriv.getBalance();
 
-    print("💰 Returning balance: $balance");
+    print("💰 Balance → $balance");
 
-    // 3️⃣ Return JSON to client
     return Response.json(
       body: {
         "success": true,
@@ -52,17 +27,17 @@ Future<Response> onRequest(RequestContext context) async {
         "timestamp": nowIso,
       },
     );
-  } catch (e, stack) {
-    print("💥 Balance API error: $e");
-    print(stack);
+  } catch (e, st) {
+    print("💥 /balance error → $e");
+    print(st);
 
     return Response.json(
       statusCode: 500,
       body: {
         "success": false,
         "balance": 0.0,
-        "timestamp": nowIso,
         "error": e.toString(),
+        "timestamp": nowIso,
       },
     );
   }

@@ -1,109 +1,165 @@
 // routes/last_prices.dart
+
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
 
 /// ================= HELPERS =================
-/// Normalize pair (add FRX prefix if missing)
-String _normalizePair(String p) {
-  p = p.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+
+String _normalizePair(String pair) {
+  var p = pair.toUpperCase().trim();
+
+  p = p.replaceAll(RegExp(r'[^A-Z]'), '');
+
   while (p.startsWith('FRXFRX')) {
     p = p.substring(3);
   }
+
   if (!p.startsWith('FRX')) {
     p = 'FRX$p';
   }
+
   return p;
 }
 
-/// Safely parse candles epoch to int seconds
-int _parseEpoch(dynamic epoch) {
-  if (epoch is int) return epoch;
-  if (epoch is double) return epoch.toInt();
-  if (epoch is String) return int.tryParse(epoch) ?? 0;
-  return 0;
-}
+/// ================= MODEL =================
 
-/// ================= LAST PRICE MODEL =================
 class LastPrice {
   final String pair;
   final double price;
-  final int epoch;
 
-  LastPrice({
+  const LastPrice({
     required this.pair,
     required this.price,
-    required this.epoch,
   });
 
-  Map<String, dynamic> toJson() => {
-        'pair': pair,
-        'price': price,
-        'epoch': epoch,
-      };
+  Map<String, dynamic> toJson() {
+    return {
+      'pair': pair,
+      'price': price,
+    };
+  }
 }
 
-/// ================= ROUTE HANDLER =================
+/// ================= ROUTE =================
+
 Future<Response> onRequest(RequestContext context) async {
   final nowIso = DateTime.now().toUtc().toIso8601String();
-  print('⚡ /last-prices hit at $nowIso');
+
+  print('');
+  print('==========================================');
+  print('⚡ /last-prices hit');
+  print('🕒 $nowIso');
+  print('==========================================');
 
   try {
-    final pairsQuery = context.request.uri.queryParameters['pairs'];
-
     final deriv = DerivService.instance;
+
     if (!deriv.isConnected) {
-      print("🔌 Connecting to Deriv...");
+      print('🔌 Connecting to Deriv...');
       await deriv.connect();
-      print("✅ Connected to Deriv");
+      print('✅ Connected');
     }
 
-    // Parse pairs
-    final pairs = (pairsQuery != null && pairsQuery.isNotEmpty)
-        ? pairsQuery.split(',').map((p) => p.trim().toUpperCase()).toList()
-        : ['EURUSD', 'USDJPY', 'GBPUSD'];
+    final pairsQuery =
+        context.request.uri.queryParameters['pairs'];
 
-    final results = <LastPrice>[];
+    final rawPairs =
+        (pairsQuery != null && pairsQuery.isNotEmpty)
+            ? pairsQuery
+                .split(',')
+                .map((e) => e.trim())
+                .where((e) => e.isNotEmpty)
+                .toList()
+            :<String>[
+    'EURUSD',
+    'GBPUSD',
+    'USDJPY',
+    'AUDUSD',
+    'USDCAD',
+    'USDCHF',
+    'NZDUSD',
+    'EURJPY',
+    'GBPJPY',
+    'AUDJPY',
+    'EURGBP',
+    'EURAUD',
+    'GBPAUD',
+    'GBPCHF',
+    'EURCHF',
+    'CADJPY',
+    'CHFJPY',
+    'AUDCAD',
+    'AUDCHF',
+    'AUDNZD',
+    'NZDJPY',
+    'NZDCAD',
+    'NZDCHF',
+    'GBPCAD',
+    'EURNZD',
+    'GBPNZD',
+  ];
 
-    for (final pair in pairs) {
-      final normalized = _normalizePair(pair);
+    final pairs =
+        rawPairs.map(_normalizePair).toList();
+
+    print('📊 Requested pairs: ${pairs.length}');
+    print(pairs);
+
+    final futures = pairs.map((pair) async {
       try {
-        final price = await deriv.getLastPrice(normalized);
-        final candles = await deriv.getCandles(normalized);
+        final price =
+            await deriv.getLastPrice(pair);
 
-        final epoch = (candles.isNotEmpty)
-            ? _parseEpoch(candles.last.epoch)
-            : DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+        print('✅ $pair -> $price');
 
-        results.add(
-          LastPrice(pair: normalized, price: price, epoch: epoch),
+        return LastPrice(
+          pair: pair,
+          price: price,
         );
-      } catch (e) {
-        print("⚠ Failed price for $pair: $e");
-        results.add(
-          LastPrice(pair: normalized, price: 0.0, epoch: 0),
+      } catch (e, st) {
+        print('❌ FAILED $pair');
+        print(e);
+        print(st);
+
+        return LastPrice(
+          pair: pair,
+          price: 0.0,
         );
       }
-    }
+    });
+
+    final results = await Future.wait(futures);
+
+    final validPrices =
+        results.where((e) => e.price > 0).length;
+
+    print(
+      '📈 Valid prices: $validPrices/${results.length}',
+    );
 
     return Response.json(
       body: {
         "success": true,
         "count": results.length,
-        "data": results.map((e) => e.toJson()).toList(),
+        "valid_prices": validPrices,
+        "data": results
+            .map((e) => e.toJson())
+            .toList(),
         "timestamp": nowIso,
       },
     );
   } catch (e, st) {
-    print('💥 /last_prices error: $e');
+    print('❌ /last-prices fatal error');
+    print(e);
     print(st);
 
     return Response.json(
       statusCode: 500,
       body: {
-        'success': false,
-        'error': 'Failed to fetch last prices',
-        'details': e.toString(),
-        'timestamp': nowIso,
+        "success": false,
+        "error": e.toString(),
+        "timestamp":
+            DateTime.now().toUtc().toIso8601String(),
       },
     );
   }
