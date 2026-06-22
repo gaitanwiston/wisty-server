@@ -66,19 +66,19 @@ class MarketAnalysisService {
   final Map<String, int> _lastSize = {};
   final Map<String, MarketAnalysisResult> _latest = {};
   final Map<String, DateTime> _lastUpdate = {};
-
   final Map<String, DateTime> _lastSignalTime = {};
-  Timer? _globalAnalysisTimer;
 
+  Timer? _globalAnalysisTimer;
   final Duration signalCooldown = const Duration(seconds: 30);
 
   bool debugMode = true;
 
-  // ================= SYMBOL NORMALIZER =================
+  // ================= NORMALIZER (FIXED) =================
   String _norm(String s) {
     return s
         .toUpperCase()
         .replaceAll("FRX", "")
+        .replaceAll("OTC", "")
         .replaceAll("_", "")
         .replaceAll("-", "")
         .trim();
@@ -103,15 +103,15 @@ class MarketAnalysisService {
     Timer.periodic(const Duration(seconds: 5), (_) async {
       for (final p in pairs) {
         try {
+          final key = _norm(p);
+
           final h1 = await deriv.getCandles(p, TF.h1);
           final h4 = await deriv.getCandles(p, TF.h4);
           final d1 = await deriv.getCandles(p, TF.d1);
           final w1 = await deriv.getCandles(p, TF.w1);
 
-          final key = _norm(p);
-
-          if (h1.length < 120) {
-            _log("SKIP $key → not enough candles");
+          if (h1.isEmpty || h1.length < 120) {
+            _log("SKIP $key → insufficient candles");
             continue;
           }
 
@@ -120,13 +120,15 @@ class MarketAnalysisService {
 
           final result = _analyze(key, w1, d1, h4, h1);
 
+          // 🔥 GUARANTEED CACHE SYNC
           _latest[key] = result;
           _lastUpdate[key] = DateTime.now();
 
           _controller.add(result);
 
-          _log("RESULT $key → BUY:${result.canBuy} SELL:${result.canSell} CONF:${result.indicators["confidence"]}");
-
+          _log(
+            "RESULT $key → BUY:${result.canBuy} SELL:${result.canSell} CONF:${result.indicators["confidence"]}",
+          );
         } catch (e) {
           _log("ERROR $p -> $e");
         }
@@ -144,7 +146,7 @@ class MarketAnalysisService {
   ) {
     final key = _norm(pair);
 
-    if (h1.length < 3) return _fallback(pair, h1);
+    if (h1.length < 3) return _fallback(key, h1);
 
     final w1Bias = _bias(w1);
     final d1Bias = _bias(d1);
@@ -217,16 +219,44 @@ class MarketAnalysisService {
       _lastSignalTime[key] = DateTime.now();
     }
 
-    // ================= DEBUG OUTPUT =================
-    _log("\n========== ANALYSIS ==========");
-    _log("PAIR: $key");
-    _log("BUY SCORE: $buy");
-    _log("SELL SCORE: $sell");
-    _log("CONFIDENCE: $confidence");
-    _log("TREND ALIGNED: $trendAligned");
-    _log("FINAL BUY: $isBuy | FINAL SELL: $isSell");
+    // ================= SAFE CACHE GUARANTEE =================
+    _latest[key] = _latest[key] ?? MarketAnalysisResult(
+      symbol: key,
+      candles: h1,
+      candlesH1: h1,
+      candlesM15: h4,
+      candlesM30: d1,
+      candlesM5: const [],
+      canBuy: false,
+      canSell: false,
+      structureValid: false,
+      emaValid: false,
+      rsiValid: false,
+      confirmationValid: false,
+      filtersValid: false,
+      ema50: const [],
+      ema200: const [],
+      indicators: const {},
+      entryCandles: const [],
+      structurePoints: const [],
+      conditionsMet: const [],
+      reasonsFailed: const [],
+      stopLoss: 0,
+      takeProfit: 0,
+      structureBuy: false,
+      structureSell: false,
+      biasIsBuy: false,
+      isValidTrade: false,
+      risk: RiskModel(
+        entry: 0,
+        stopLoss: 0,
+        takeProfit: 0,
+        lotSize: 0,
+        direction: "NONE",
+      ),
+    );
 
-    final result = MarketAnalysisResult(
+    return MarketAnalysisResult(
       symbol: key,
       candles: h1,
       candlesH1: h1,
@@ -271,8 +301,6 @@ class MarketAnalysisService {
         direction: isBuy ? "BUY" : isSell ? "SELL" : "NONE",
       ),
     );
-
-    return result;
   }
 
   // ================= FALLBACK =================
@@ -372,12 +400,11 @@ class MarketAnalysisService {
     return len == 0 ? 0 : sum / len;
   }
 
-  // ================= SAFE FETCH =================
+  // ================= DEBUG =================
+  List<String> debugKeys() => _latest.keys.toList();
+
   MarketAnalysisResult? latestFor(String pair) {
     final key = _norm(pair);
-
     return _latest[key];
   }
-
-  List<String> debugKeys() => _latest.keys.toList();
 }
