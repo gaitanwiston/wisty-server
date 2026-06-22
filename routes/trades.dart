@@ -134,9 +134,7 @@ void _checkDailyLimits() {
   if (DAY_START_BALANCE <= 0) return;
 
   final pnlPercent =
-      ((CURRENT_BALANCE - DAY_START_BALANCE) /
-              DAY_START_BALANCE) *
-          100;
+      ((CURRENT_BALANCE - DAY_START_BALANCE) / DAY_START_BALANCE) * 100;
 
   if (pnlPercent >= DAILY_PROFIT_TARGET_PERCENT) {
     AUTO_TRADING_ENABLED = false;
@@ -165,7 +163,6 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       );
     }
 
-    /// ================= EXTRACT =================
     final symbol = json['symbol']?.toString() ?? '';
     final direction = json['direction']?.toString() ?? '';
     final confidence = (json['confidence'] as num?)?.toDouble() ?? 0.0;
@@ -212,11 +209,10 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
 
     if (analysis != null) {
       print("Analysis.isValidTrade: ${analysis.isValidTrade}");
-      print("Analysis CONFIDENCE: ${analysis.indicators["confidence"]}");
-      print("Analysis RAW DATA: ${analysis.indicators}");
+      print("Confidence: ${analysis.indicators["confidence"]}");
+      print("RAW: ${analysis.indicators}");
     }
 
-    /// ================= DECISION =================
     if (analysis == null) {
       print("❌ REJECTED → No analysis data");
       return Response.json(
@@ -225,15 +221,14 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
     }
 
     if (!analysis.isValidTrade) {
-      print("❌ REJECTED → Invalid trade by analysis engine");
+      print("❌ REJECTED → Invalid analysis signal");
       return Response.json(
         body: {"status": "market rejected", "reason": "invalid_analysis"},
       );
     }
 
-    print("✅ APPROVED → Trade passed analysis filter");
+    print("✅ APPROVED → Analysis passed filter");
 
-    /// ================= TRADE DATA =================
     final deriv = DerivService.instance;
 
     final entry = (json['entry'] as num).toDouble();
@@ -244,13 +239,11 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
     final stake = _calculateStake(confidence, CURRENT_BALANCE);
 
     print("\n========== EXECUTING TRADE ==========");
-    print("Symbol: $symbol");
+    print("Pair: $symbol");
     print("Direction: $direction");
-    print("Entry: $entry | SL: $sl | TP: $tp");
+    print("Entry: $entry SL: $sl TP: $tp");
     print("Stake: $stake");
-    print("Balance: $CURRENT_BALANCE");
 
-    /// ================= EXECUTE =================
     final contractId = await deriv.placeTrade(
       symbol,
       isBuy,
@@ -265,7 +258,7 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       );
     }
 
-    print("🚀 TRADE EXECUTED → CONTRACT: $contractId");
+    print("🚀 TRADE EXECUTED → $contractId");
 
     final trade = ActiveTrade(
       contractId: contractId,
@@ -282,12 +275,12 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
 
     return Response.json(body: {
       "status": "EXECUTED",
+      "contractId": contractId,
       "symbol": symbol,
       "direction": direction,
-      "contractId": contractId,
-      "stake": stake,
       "balance": CURRENT_BALANCE,
     });
+
   } catch (e) {
     print("🔥 ERROR: $e");
     return Response.json(
@@ -323,27 +316,13 @@ void _subscribeToTrade(ActiveTrade trade) {
       final risk = (trade.entry - trade.sl).abs();
       if (risk == 0) return;
 
-      double rr;
-
-      if (trade.buy) {
-        rr = (price - trade.entry) / risk;
-      } else {
-        rr = (trade.entry - price) / risk;
-      }
+      double rr = trade.buy
+          ? (price - trade.entry) / risk
+          : (trade.entry - price) / risk;
 
       if (!trade.breakeven && rr >= 1) {
         trade.sl = trade.entry;
         trade.breakeven = true;
-      }
-
-      if (rr >= TRAILING_TRIGGER_RR) {
-        if (trade.buy) {
-          final newSl = trade.entry + (risk * TRAILING_STEP_RR);
-          if (newSl > trade.sl) trade.sl = newSl;
-        } else {
-          final newSl = trade.entry - (risk * TRAILING_STEP_RR);
-          if (newSl < trade.sl) trade.sl = newSl;
-        }
       }
 
       final tpHit = trade.buy ? price >= trade.tp : price <= trade.tp;
@@ -359,10 +338,7 @@ void _subscribeToTrade(ActiveTrade trade) {
 }
 
 /// ================= CLOSE =================
-Future<void> _closeTrade(
-  ActiveTrade trade, {
-  required String reason,
-}) async {
+Future<void> _closeTrade(ActiveTrade trade, {required String reason}) async {
   if (trade.closed) return;
 
   trade.closed = true;
@@ -372,14 +348,9 @@ Future<void> _closeTrade(
   } catch (_) {}
 
   _subscriptions[trade.contractId]?.cancel();
-  _subscriptions.remove(trade.contractId);
   _activeTrades.remove(trade.contractId);
 
-  if (reason == "SL") {
-    lossStreak++;
-  } else {
-    lossStreak = 0;
-  }
+  if (reason == "SL") lossStreak++; else lossStreak = 0;
 
   CURRENT_BALANCE = await _getBalance();
   _checkEquityProtection();
@@ -388,7 +359,5 @@ Future<void> _closeTrade(
   print("\n========== TRADE CLOSED ==========");
   print("Contract: ${trade.contractId}");
   print("Reason: $reason");
-  print("Pair: ${trade.pair}");
-  print("Loss streak: $lossStreak");
   print("Balance: $CURRENT_BALANCE");
 }

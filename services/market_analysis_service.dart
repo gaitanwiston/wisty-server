@@ -65,13 +65,24 @@ class MarketAnalysisService {
 
   final Map<String, int> _lastSize = {};
   final Map<String, MarketAnalysisResult> _latest = {};
+  final Map<String, DateTime> _lastUpdate = {};
 
-  // ✅ FIXED STATE
   final Map<String, DateTime> _lastSignalTime = {};
   Timer? _globalAnalysisTimer;
+
   final Duration signalCooldown = const Duration(seconds: 30);
 
   bool debugMode = true;
+
+  // ================= SYMBOL NORMALIZER =================
+  String _norm(String s) {
+    return s
+        .toUpperCase()
+        .replaceAll("FRX", "")
+        .replaceAll("_", "")
+        .replaceAll("-", "")
+        .trim();
+  }
 
   void _log(String msg) {
     if (debugMode) {
@@ -86,7 +97,7 @@ class MarketAnalysisService {
 
     for (final p in pairs) {
       deriv.subscribe(p);
-      _lastSize[p] = 0;
+      _lastSize[_norm(p)] = 0;
     }
 
     Timer.periodic(const Duration(seconds: 5), (_) async {
@@ -97,20 +108,24 @@ class MarketAnalysisService {
           final d1 = await deriv.getCandles(p, TF.d1);
           final w1 = await deriv.getCandles(p, TF.w1);
 
+          final key = _norm(p);
+
           if (h1.length < 120) {
-            _log("SKIP $p → not enough candles (${h1.length})");
+            _log("SKIP $key → not enough candles");
             continue;
           }
 
-          if (_lastSize[p] == h1.length) continue;
-          _lastSize[p] = h1.length;
+          if (_lastSize[key] == h1.length) continue;
+          _lastSize[key] = h1.length;
 
-          final result = _analyze(p, w1, d1, h4, h1);
+          final result = _analyze(key, w1, d1, h4, h1);
 
-          _latest[p] = result;
+          _latest[key] = result;
+          _lastUpdate[key] = DateTime.now();
+
           _controller.add(result);
 
-          _log("RESULT $p → BUY:${result.canBuy} SELL:${result.canSell} CONF:${result.indicators["confidence"]}");
+          _log("RESULT $key → BUY:${result.canBuy} SELL:${result.canSell} CONF:${result.indicators["confidence"]}");
 
         } catch (e) {
           _log("ERROR $p -> $e");
@@ -119,7 +134,7 @@ class MarketAnalysisService {
     });
   }
 
-  // ================= MAIN ANALYSIS =================
+  // ================= ANALYSIS =================
   MarketAnalysisResult _analyze(
     String pair,
     List<Candle> w1,
@@ -127,6 +142,8 @@ class MarketAnalysisService {
     List<Candle> h4,
     List<Candle> h1,
   ) {
+    final key = _norm(pair);
+
     if (h1.length < 3) return _fallback(pair, h1);
 
     final w1Bias = _bias(w1);
@@ -188,8 +205,8 @@ class MarketAnalysisService {
     bool isBuy = strongTrend && clearEdge && trendAligned && buy > sell;
     bool isSell = strongTrend && clearEdge && trendAligned && sell > buy;
 
-    // ================= COOLDOWN FIX =================
-    final lastSignal = _lastSignalTime[pair];
+    // ================= COOLDOWN =================
+    final lastSignal = _lastSignalTime[key];
     final canSend = lastSignal == null ||
         DateTime.now().difference(lastSignal) > signalCooldown;
 
@@ -197,11 +214,20 @@ class MarketAnalysisService {
     isSell = isSell && canSend;
 
     if (isBuy || isSell) {
-      _lastSignalTime[pair] = DateTime.now();
+      _lastSignalTime[key] = DateTime.now();
     }
 
-    return MarketAnalysisResult(
-      symbol: pair,
+    // ================= DEBUG OUTPUT =================
+    _log("\n========== ANALYSIS ==========");
+    _log("PAIR: $key");
+    _log("BUY SCORE: $buy");
+    _log("SELL SCORE: $sell");
+    _log("CONFIDENCE: $confidence");
+    _log("TREND ALIGNED: $trendAligned");
+    _log("FINAL BUY: $isBuy | FINAL SELL: $isSell");
+
+    final result = MarketAnalysisResult(
+      symbol: key,
       candles: h1,
       candlesH1: h1,
       candlesM15: h4,
@@ -223,22 +249,16 @@ class MarketAnalysisService {
         "gap": dominance,
         "trendAligned": trendAligned,
       },
-
       entryCandles: const [],
       structurePoints: const [],
       conditionsMet: const [],
       reasonsFailed: const [],
-
       stopLoss: _atr(h1),
       takeProfit: _atr(h1) * 3,
-
       structureBuy: isBuy,
       structureSell: isSell,
       biasIsBuy: isBuy,
-
-      // 🔥 FIXED MISSING FIELD
       isValidTrade: isBuy || isSell,
-
       risk: RiskModel(
         entry: h1.last.close,
         stopLoss: isBuy
@@ -251,6 +271,8 @@ class MarketAnalysisService {
         direction: isBuy ? "BUY" : isSell ? "SELL" : "NONE",
       ),
     );
+
+    return result;
   }
 
   // ================= FALLBACK =================
@@ -281,9 +303,7 @@ class MarketAnalysisService {
       structureBuy: false,
       structureSell: false,
       biasIsBuy: false,
-
       isValidTrade: false,
-
       risk: RiskModel(
         entry: 0,
         stopLoss: 0,
@@ -294,28 +314,9 @@ class MarketAnalysisService {
     );
   }
 
-  // ================= PERIODIC =================
-  void startPeriodicAnalysis(List<String> pairs) {
-    _globalAnalysisTimer?.cancel();
-
-    _globalAnalysisTimer = Timer.periodic(
-      const Duration(minutes: 5),
-      (_) async {
-        for (final p in pairs) {
-          await _runAnalysis(p);
-        }
-      },
-    );
-  }
-
-  Future<void> _runAnalysis(String pair) async {
-    _log("FORCED ANALYSIS → $pair");
-  }
-
   // ================= HELPERS =================
   MarketBias _bias(List<Candle> c) {
     int up = 0, down = 0;
-
     for (int i = 1; i < c.length; i++) {
       if (c[i].close > c[i - 1].close) up++;
       if (c[i].close < c[i - 1].close) down++;
@@ -371,5 +372,12 @@ class MarketAnalysisService {
     return len == 0 ? 0 : sum / len;
   }
 
-  MarketAnalysisResult? latestFor(String pair) => _latest[pair];
+  // ================= SAFE FETCH =================
+  MarketAnalysisResult? latestFor(String pair) {
+    final key = _norm(pair);
+
+    return _latest[key];
+  }
+
+  List<String> debugKeys() => _latest.keys.toList();
 }
