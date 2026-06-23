@@ -197,7 +197,7 @@ class MarketAnalysisService {
     }
 
     _log("ANALYSIS $key → BUY:$buy SELL:$sell CONF:$confidence");
-
+_log("CACHE KEYS: ${_latest.keys.toList()}");
     return MarketAnalysisResult(
       symbol: key,
       candles: h1,

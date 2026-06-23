@@ -199,11 +199,21 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       return Response.json(body: {"status": "equity protection triggered"});
     }
 
- final analysis =
-    MarketAnalysisService.instance.latestFor(symbol);
+final normalizedSymbol = symbol
+    .toUpperCase()
+    .replaceAll("FRX", "")
+    .replaceAll("OTC", "")
+    .replaceAll("_", "")
+    .replaceAll("-", "")
+    .trim();
 
-print("LOOKUP SYMBOL RAW: $symbol");
-print("LOOKUP RESULT: ${analysis?.symbol}");
+print("🔍 LOOKUP SYMBOL RAW: $symbol");
+print("🔍 LOOKUP SYMBOL NORMALIZED: $normalizedSymbol");
+
+final analysis =
+    MarketAnalysisService.instance.latestFor(normalizedSymbol);
+
+print("🔍 LOOKUP RESULT: ${analysis != null}");
 
     print("\n========== ANALYSIS COMPARISON ==========");
     print("Symbol: $symbol");
