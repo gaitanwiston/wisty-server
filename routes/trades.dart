@@ -199,13 +199,7 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       return Response.json(body: {"status": "equity protection triggered"});
     }
 
-final normalizedSymbol = symbol
-    .toUpperCase()
-    .replaceAll("FRX", "")
-    .replaceAll("OTC", "")
-    .replaceAll("_", "")
-    .replaceAll("-", "")
-    .trim();
+final normalizedSymbol = symbol.toUpperCase().trim();
 
 print("🔍 LOOKUP SYMBOL RAW: $symbol");
 print("🔍 LOOKUP SYMBOL NORMALIZED: $normalizedSymbol");

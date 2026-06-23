@@ -72,24 +72,26 @@ class MarketAnalysisService {
   final Duration signalCooldown = const Duration(seconds: 30);
 
   bool debugMode = true;
+void _log(String message) {
+  print(message);
+}
 
+String _norm(String symbol) {
+  return symbol.toUpperCase().trim();
+}
   // ================= NORMALIZER (ULTRA FIXED) =================
-  String _norm(String s) {
-    return s
-        .toUpperCase()
-        .replaceAll("FRX", "")
-        .replaceAll("OTC", "")
-        .replaceAll("R_", "")
-        .replaceAll("_", "")
-        .replaceAll("-", "")
-        .trim();
-  }
+  MarketAnalysisResult? latestForSymbol(String symbol) {
+  final normalizedSymbol = _norm(symbol);
 
-  void _log(String msg) {
-    if (debugMode) {
-      print("[PROMAX ULTRA NEXT] $msg");
-    }
-  }
+  _log("🔍 LOOKUP SYMBOL RAW: $symbol");
+  _log("🔍 LOOKUP SYMBOL NORMALIZED: $normalizedSymbol");
+
+  final analysis = _latest[normalizedSymbol];
+
+  _log("🔍 LOOKUP RESULT: ${analysis != null}");
+
+  return analysis;
+}
 
   // ================= START =================
 Future<void> startPairs(List<String> pairs) async {
