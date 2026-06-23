@@ -199,9 +199,11 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       return Response.json(body: {"status": "equity protection triggered"});
     }
 
-    /// ================= ANALYSIS =================
-    final analysis =
-        MarketAnalysisService.instance.latestFor(symbol);
+ final analysis =
+    MarketAnalysisService.instance.latestFor(symbol);
+
+print("LOOKUP SYMBOL RAW: $symbol");
+print("LOOKUP RESULT: ${analysis?.symbol}");
 
     print("\n========== ANALYSIS COMPARISON ==========");
     print("Symbol: $symbol");

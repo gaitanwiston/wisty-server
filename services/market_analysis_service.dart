@@ -73,12 +73,13 @@ class MarketAnalysisService {
 
   bool debugMode = true;
 
-  // ================= NORMALIZER (FIXED) =================
+  // ================= NORMALIZER (ULTRA FIXED) =================
   String _norm(String s) {
     return s
         .toUpperCase()
         .replaceAll("FRX", "")
         .replaceAll("OTC", "")
+        .replaceAll("R_", "")
         .replaceAll("_", "")
         .replaceAll("-", "")
         .trim();
@@ -96,22 +97,29 @@ class MarketAnalysisService {
     await deriv.connect();
 
     for (final p in pairs) {
+      final key = _norm(p);
+
       deriv.subscribe(p);
-      _lastSize[_norm(p)] = 0;
+      _lastSize[key] = 0;
+
+      // 🔥 PRE-SEED CACHE (IMPORTANT FIX)
+      _latest[key] = _emptyResult(key);
+
+      _log("SUBSCRIBED → $key");
     }
 
     Timer.periodic(const Duration(seconds: 5), (_) async {
       for (final p in pairs) {
-        try {
-          final key = _norm(p);
+        final key = _norm(p);
 
+        try {
           final h1 = await deriv.getCandles(p, TF.h1);
           final h4 = await deriv.getCandles(p, TF.h4);
           final d1 = await deriv.getCandles(p, TF.d1);
           final w1 = await deriv.getCandles(p, TF.w1);
 
           if (h1.isEmpty || h1.length < 120) {
-            _log("SKIP $key → insufficient candles");
+            _log("SKIP $key → insufficient candles (${h1.length})");
             continue;
           }
 
@@ -120,17 +128,18 @@ class MarketAnalysisService {
 
           final result = _analyze(key, w1, d1, h4, h1);
 
-          // 🔥 GUARANTEED CACHE SYNC
+          // 🔥 GUARANTEED SYNC (NO NULL EVER)
           _latest[key] = result;
           _lastUpdate[key] = DateTime.now();
 
           _controller.add(result);
 
           _log(
-            "RESULT $key → BUY:${result.canBuy} SELL:${result.canSell} CONF:${result.indicators["confidence"]}",
+            "UPDATE $key → BUY:${result.canBuy} SELL:${result.canSell} CONF:${result.indicators["confidence"]}",
           );
+
         } catch (e) {
-          _log("ERROR $p -> $e");
+          _log("ERROR $key → $e");
         }
       }
     });
@@ -146,25 +155,11 @@ class MarketAnalysisService {
   ) {
     final key = _norm(pair);
 
-    if (h1.length < 3) return _fallback(key, h1);
+    if (h1.length < 3) return _emptyResult(key);
 
     final w1Bias = _bias(w1);
     final d1Bias = _bias(d1);
     final trendAligned = (w1Bias == d1Bias) && w1Bias != MarketBias.none;
-
-    final liquidity = _detectLiquidity(h4);
-    final ob = _detectOrderBlock(h4);
-
-    final last5 = h1.sublist(max(0, h1.length - 5));
-
-    int bull = 0, bear = 0;
-    for (final c in last5) {
-      if (c.close > c.open) bull++;
-      if (c.close < c.open) bear++;
-    }
-
-    final h1Buy = bull >= 3;
-    final h1Sell = bear >= 3;
 
     final last = h1.last;
     final prev = h1[h1.length - 2];
@@ -182,32 +177,14 @@ class MarketAnalysisService {
     double buy = 0;
     double sell = 0;
 
-    if (trendAligned && w1Bias == MarketBias.buy) buy += 35;
-    if (trendAligned && w1Bias == MarketBias.sell) sell += 35;
+    if (engulfBull) buy += 40;
+    if (engulfBear) sell += 40;
 
-    if (liquidity.sweepLow) buy += 25;
-    if (liquidity.sweepHigh) sell += 25;
+    final confidence = max(buy, sell);
 
-    if (ob.validBullish) buy += 25;
-    if (ob.validBearish) sell += 25;
+    bool isBuy = buy > sell && confidence >= 60;
+    bool isSell = sell > buy && confidence >= 60;
 
-    if (h1Buy) buy += 15;
-    if (h1Sell) sell += 15;
-
-    if (engulfBull) buy += 15;
-    if (engulfBear) sell += 15;
-
-    final total = buy + sell;
-    final dominance = (buy - sell).abs();
-    final confidence = total == 0 ? 0 : (max(buy, sell) / total) * 100;
-
-    final strongTrend = confidence >= 65;
-    final clearEdge = dominance >= 25;
-
-    bool isBuy = strongTrend && clearEdge && trendAligned && buy > sell;
-    bool isSell = strongTrend && clearEdge && trendAligned && sell > buy;
-
-    // ================= COOLDOWN =================
     final lastSignal = _lastSignalTime[key];
     final canSend = lastSignal == null ||
         DateTime.now().difference(lastSignal) > signalCooldown;
@@ -219,42 +196,7 @@ class MarketAnalysisService {
       _lastSignalTime[key] = DateTime.now();
     }
 
-    // ================= SAFE CACHE GUARANTEE =================
-    _latest[key] = _latest[key] ?? MarketAnalysisResult(
-      symbol: key,
-      candles: h1,
-      candlesH1: h1,
-      candlesM15: h4,
-      candlesM30: d1,
-      candlesM5: const [],
-      canBuy: false,
-      canSell: false,
-      structureValid: false,
-      emaValid: false,
-      rsiValid: false,
-      confirmationValid: false,
-      filtersValid: false,
-      ema50: const [],
-      ema200: const [],
-      indicators: const {},
-      entryCandles: const [],
-      structurePoints: const [],
-      conditionsMet: const [],
-      reasonsFailed: const [],
-      stopLoss: 0,
-      takeProfit: 0,
-      structureBuy: false,
-      structureSell: false,
-      biasIsBuy: false,
-      isValidTrade: false,
-      risk: RiskModel(
-        entry: 0,
-        stopLoss: 0,
-        takeProfit: 0,
-        lotSize: 0,
-        direction: "NONE",
-      ),
-    );
+    _log("ANALYSIS $key → BUY:$buy SELL:$sell CONF:$confidence");
 
     return MarketAnalysisResult(
       symbol: key,
@@ -269,15 +211,13 @@ class MarketAnalysisService {
       emaValid: true,
       rsiValid: true,
       confirmationValid: isBuy || isSell,
-      filtersValid: confidence > 65,
+      filtersValid: confidence > 60,
       ema50: const [],
       ema200: const [],
       indicators: {
         "buy": buy,
         "sell": sell,
         "confidence": confidence,
-        "gap": dominance,
-        "trendAligned": trendAligned,
       },
       entryCandles: const [],
       structurePoints: const [],
@@ -303,12 +243,12 @@ class MarketAnalysisService {
     );
   }
 
-  // ================= FALLBACK =================
-  MarketAnalysisResult _fallback(String pair, List<Candle> h1) {
+  // ================= GUARANTEED EMPTY =================
+  MarketAnalysisResult _emptyResult(String key) {
     return MarketAnalysisResult(
-      symbol: pair,
-      candles: h1,
-      candlesH1: h1,
+      symbol: key,
+      candles: const [],
+      candlesH1: const [],
       candlesM15: const [],
       candlesM30: const [],
       candlesM5: const [],
@@ -325,7 +265,7 @@ class MarketAnalysisService {
       entryCandles: const [],
       structurePoints: const [],
       conditionsMet: const [],
-      reasonsFailed: const ["Insufficient data"],
+      reasonsFailed: const ["init"],
       stopLoss: 0,
       takeProfit: 0,
       structureBuy: false,
@@ -355,40 +295,6 @@ class MarketAnalysisService {
     return MarketBias.none;
   }
 
-  Liquidity _detectLiquidity(List<Candle> c) {
-    int eqH = 0, eqL = 0;
-    double threshold = 0.0005;
-
-    for (int i = 1; i < c.length; i++) {
-      if ((c[i].high - c[i - 1].high).abs() < threshold) eqH++;
-      if ((c[i].low - c[i - 1].low).abs() < threshold) eqL++;
-    }
-
-    return Liquidity(
-      sweepHigh: eqH > 2,
-      sweepLow: eqL > 2,
-      equalHighs: eqH,
-      equalLows: eqL,
-    );
-  }
-
-  OrderBlock _detectOrderBlock(List<Candle> c) {
-    for (int i = max(1, c.length - 5); i < c.length; i++) {
-      final p = c[i - 1];
-      final cur = c[i];
-
-      if (cur.close > cur.open && cur.close > p.high) {
-        return OrderBlock(validBullish: true, validBearish: false, strength: 0.85);
-      }
-
-      if (cur.close < cur.open && cur.close < p.low) {
-        return OrderBlock(validBullish: false, validBearish: true, strength: 0.85);
-      }
-    }
-
-    return OrderBlock(validBullish: false, validBearish: false, strength: 0.3);
-  }
-
   double _atr(List<Candle> c) {
     int len = min(14, c.length - 1);
     double sum = 0;
@@ -400,11 +306,11 @@ class MarketAnalysisService {
     return len == 0 ? 0 : sum / len;
   }
 
-  // ================= DEBUG =================
-  List<String> debugKeys() => _latest.keys.toList();
-
   MarketAnalysisResult? latestFor(String pair) {
     final key = _norm(pair);
+
+    _log("LOOKUP → $key EXISTS:${_latest.containsKey(key)}");
+
     return _latest[key];
   }
 }
