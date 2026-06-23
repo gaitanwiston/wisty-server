@@ -103,6 +103,7 @@ Future<void> startPairs(List<String> pairs) async {
   _log("MARKET ANALYSIS ENGINE STARTING");
   _log("TOTAL PAIRS RECEIVED: ${pairs.length}");
   _log("========================================");
+_log("📦 AVAILABLE KEYS: ${_latest.keys.toList()}");
 
   // Stop old timer if already running
   _globalAnalysisTimer?.cancel();
