@@ -92,58 +92,64 @@ class MarketAnalysisService {
   }
 
   // ================= START =================
-  Future<void> startPairs(List<String> pairs) async {
-    final deriv = DerivService.instance;
-    await deriv.connect();
+Future<void> startPairs(List<String> pairs) async {
+  final deriv = DerivService.instance;
 
+  await deriv.connect();
+
+  for (final p in pairs) {
+    final key = _norm(p);
+
+    deriv.subscribe(p);
+
+    _lastSize[key] = 0;
+
+    _log("SUBSCRIBED PAIR → $key");
+  }
+
+  Timer.periodic(const Duration(seconds: 5), (_) async {
     for (final p in pairs) {
-      final key = _norm(p);
-
-      deriv.subscribe(p);
-      _lastSize[key] = 0;
-
-      // 🔥 PRE-SEED CACHE (IMPORTANT FIX)
-      _latest[key] = _emptyResult(key);
-
-      _log("SUBSCRIBED → $key");
-    }
-
-    Timer.periodic(const Duration(seconds: 5), (_) async {
-      for (final p in pairs) {
+      try {
         final key = _norm(p);
 
-        try {
-          final h1 = await deriv.getCandles(p, TF.h1);
-          final h4 = await deriv.getCandles(p, TF.h4);
-          final d1 = await deriv.getCandles(p, TF.d1);
-          final w1 = await deriv.getCandles(p, TF.w1);
+        _log("CHECKING PAIR → $key");
 
-          if (h1.isEmpty || h1.length < 120) {
-            _log("SKIP $key → insufficient candles (${h1.length})");
-            continue;
-          }
+        final h1 = await deriv.getCandles(p, TF.h1);
 
-          if (_lastSize[key] == h1.length) continue;
-          _lastSize[key] = h1.length;
+        _log("CANDLES RECEIVED → $key : ${h1.length}");
 
-          final result = _analyze(key, w1, d1, h4, h1);
-
-          // 🔥 GUARANTEED SYNC (NO NULL EVER)
-          _latest[key] = result;
-          _lastUpdate[key] = DateTime.now();
-
-          _controller.add(result);
-
-          _log(
-            "UPDATE $key → BUY:${result.canBuy} SELL:${result.canSell} CONF:${result.indicators["confidence"]}",
-          );
-
-        } catch (e) {
-          _log("ERROR $key → $e");
+        if (h1.length < 120) {
+          _log("SKIP $key → insufficient candles");
+          continue;
         }
+
+        _log("RUNNING ANALYSIS → $key");
+
+        final h4 = await deriv.getCandles(p, TF.h4);
+        final d1 = await deriv.getCandles(p, TF.d1);
+        final w1 = await deriv.getCandles(p, TF.w1);
+
+        final result = _analyze(
+          key,
+          w1,
+          d1,
+          h4,
+          h1,
+        );
+
+        _latest[key] = result;
+        _lastUpdate[key] = DateTime.now();
+
+        _log("CACHE SAVED → $key");
+        _log("CACHE KEYS → ${_latest.keys.toList()}");
+      } catch (e, s) {
+        _log("ERROR $p");
+        _log("$e");
+        _log("$s");
       }
-    });
-  }
+    }
+  });
+}
 
   // ================= ANALYSIS =================
   MarketAnalysisResult _analyze(
