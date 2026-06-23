@@ -97,60 +97,132 @@ Future<void> startPairs(List<String> pairs) async {
 
   await deriv.connect();
 
+  _log("========================================");
+  _log("MARKET ANALYSIS ENGINE STARTING");
+  _log("TOTAL PAIRS RECEIVED: ${pairs.length}");
+  _log("========================================");
+
+  // Stop old timer if already running
+  _globalAnalysisTimer?.cancel();
+
   for (final p in pairs) {
-    final key = _norm(p);
+    try {
+      final key = _norm(p);
 
-    deriv.subscribe(p);
+      deriv.subscribe(p);
 
-    _lastSize[key] = 0;
+      _lastSize[key] = 0;
 
-    _log("SUBSCRIBED PAIR → $key");
+      _log("SUBSCRIBED PAIR → $key");
+    } catch (e) {
+      _log("SUBSCRIBE ERROR → $p");
+      _log("$e");
+    }
   }
 
-  Timer.periodic(const Duration(seconds: 5), (_) async {
-    for (final p in pairs) {
-      try {
-        final key = _norm(p);
+  _log("========================================");
+  _log("ALL PAIRS SUBSCRIBED");
+  _log("========================================");
 
-        _log("CHECKING PAIR → $key");
+  _globalAnalysisTimer = Timer.periodic(
+    const Duration(seconds: 5),
+    (_) async {
+      _log("");
+      _log("========================================");
+      _log("ANALYSIS LOOP START");
+      _log("TIME: ${DateTime.now()}");
+      _log("PAIRS: ${pairs.length}");
+      _log("CACHE SIZE BEFORE: ${_latest.length}");
+      _log("========================================");
 
-        final h1 = await deriv.getCandles(p, TF.h1);
+      for (final p in pairs) {
+        try {
+          final key = _norm(p);
 
-        _log("CANDLES RECEIVED → $key : ${h1.length}");
+          _log("----------------------------------------");
+          _log("CHECKING PAIR → $key");
 
-        if (h1.length < 120) {
-          _log("SKIP $key → insufficient candles");
-          continue;
+          final h1 = await deriv.getCandles(p, TF.h1);
+
+          _log("H1 CANDLES → ${h1.length}");
+
+          if (h1.isEmpty) {
+            _log("SKIP $key → EMPTY H1");
+            continue;
+          }
+
+          if (h1.length < 120) {
+            _log(
+              "SKIP $key → INSUFFICIENT CANDLES (${h1.length}/120)",
+            );
+            continue;
+          }
+
+          if (_lastSize[key] == h1.length) {
+            _log(
+              "NO NEW CANDLE → $key (${h1.length})",
+            );
+            continue;
+          }
+
+          _lastSize[key] = h1.length;
+
+          _log("FETCHING H4...");
+          final h4 = await deriv.getCandles(p, TF.h4);
+
+          _log("FETCHING D1...");
+          final d1 = await deriv.getCandles(p, TF.d1);
+
+          _log("FETCHING W1...");
+          final w1 = await deriv.getCandles(p, TF.w1);
+
+          _log(
+            "CANDLES → H1:${h1.length} H4:${h4.length} D1:${d1.length} W1:${w1.length}",
+          );
+
+          _log("RUNNING ANALYSIS → $key");
+
+          final result = _analyze(
+            key,
+            w1,
+            d1,
+            h4,
+            h1,
+          );
+
+          _latest[key] = result;
+          _lastUpdate[key] = DateTime.now();
+
+          _controller.add(result);
+
+          _log("CACHE SAVED → $key");
+          _log("VALID TRADE → ${result.isValidTrade}");
+          _log("BUY → ${result.canBuy}");
+          _log("SELL → ${result.canSell}");
+          _log(
+            "CONFIDENCE → ${result.indicators["confidence"]}",
+          );
+
+          _log("CACHE SIZE → ${_latest.length}");
+        } catch (e, s) {
+          _log("ERROR PROCESSING PAIR → $p");
+          _log("ERROR → $e");
+          _log("STACKTRACE →");
+          _log("$s");
         }
-
-        _log("RUNNING ANALYSIS → $key");
-
-        final h4 = await deriv.getCandles(p, TF.h4);
-        final d1 = await deriv.getCandles(p, TF.d1);
-        final w1 = await deriv.getCandles(p, TF.w1);
-
-        final result = _analyze(
-          key,
-          w1,
-          d1,
-          h4,
-          h1,
-        );
-
-        _latest[key] = result;
-        _lastUpdate[key] = DateTime.now();
-
-        _log("CACHE SAVED → $key");
-        _log("CACHE KEYS → ${_latest.keys.toList()}");
-      } catch (e, s) {
-        _log("ERROR $p");
-        _log("$e");
-        _log("$s");
       }
-    }
-  });
-}
 
+      _log("");
+      _log("========================================");
+      _log("ANALYSIS LOOP COMPLETE");
+      _log("CACHE SIZE AFTER: ${_latest.length}");
+      _log("CACHE KEYS:");
+      _log("${_latest.keys.toList()}");
+      _log("========================================");
+      _log("");
+    },
+  );
+}
   // ================= ANALYSIS =================
   MarketAnalysisResult _analyze(
     String pair,
