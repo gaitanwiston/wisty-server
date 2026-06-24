@@ -1,5 +1,6 @@
 import 'package:dart_frog/dart_frog.dart';
 import '../services/deriv_service.dart';
+import '../services/market_analysis_service.dart';
 
 List<String>? _cachedPairs;
 DateTime? _lastFetch;
@@ -34,7 +35,13 @@ Future<Response> onRequest(RequestContext context) async {
     final rawPairs = await deriv.getMarketPairs();
 
     _cachedPairs = rawPairs;
-    _lastFetch = now;
+_lastFetch = now;
+
+print("🚀 STARTING ANALYSIS ENGINE");
+
+await MarketAnalysisService.instance.startPairs(rawPairs);
+
+print("✅ ANALYSIS ENGINE STARTED");
 
     return Response.json(
       body: {

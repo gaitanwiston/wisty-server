@@ -204,8 +204,31 @@ final normalizedSymbol = symbol.toUpperCase().trim();
 print("🔍 LOOKUP SYMBOL RAW: $symbol");
 print("🔍 LOOKUP SYMBOL NORMALIZED: $normalizedSymbol");
 
-final analysis =
-    MarketAnalysisService.instance.latestFor(normalizedSymbol);
+print("\n🧠 ================= ANALYSIS TRACE START =================");
+
+print("1️⃣ Incoming Symbol: $symbol");
+print("2️⃣ Normalized Symbol: $normalizedSymbol");
+
+final service = MarketAnalysisService.instance;
+
+print("3️⃣ Available Cache Keys:");
+print(service.latestKeys);
+
+final analysis = service.latestFor(normalizedSymbol);
+
+print("4️⃣ Lookup Result Exists: ${analysis != null}");
+
+if (analysis != null) {
+  print("5️⃣ IS VALID TRADE: ${analysis.isValidTrade}");
+  print("6️⃣ CAN BUY: ${analysis.canBuy}");
+  print("7️⃣ CAN SELL: ${analysis.canSell}");
+  print("8️⃣ INDICATORS:");
+  print(analysis.indicators);
+} else {
+  print("❌ 5️⃣ NO ANALYSIS FOUND FOR: $normalizedSymbol");
+}
+
+print("🧠 ================= ANALYSIS TRACE END =================\n");
 
 print("🔍 LOOKUP RESULT: ${analysis != null}");
 
@@ -220,11 +243,15 @@ print("🔍 LOOKUP RESULT: ${analysis != null}");
     }
 
     if (analysis == null) {
-      print("❌ REJECTED → No analysis data");
-      return Response.json(
-        body: {"status": "market rejected", "reason": "no_analysis"},
-      );
-    }
+  print("❌ REJECTED → No analysis data");
+
+  print("📦 CACHE KEYS:");
+  print(MarketAnalysisService.instance.latestKeys);
+
+  return Response.json(
+    body: {"status": "market rejected", "reason": "no_analysis"},
+  );
+}
 
     if (!analysis.isValidTrade) {
       print("❌ REJECTED → Invalid analysis signal");

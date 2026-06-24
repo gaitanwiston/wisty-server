@@ -6,54 +6,8 @@ import '../models/candle.dart';
 import '../models/risk_model.dart';
 import 'deriv_service.dart';
 
-// ================= ENUMS =================
 enum MarketBias { buy, sell, none }
-enum MarketSession { asia, london, newYork, sydney, unknown }
 
-enum TimeFrame { m1, h1, h4, d1, w1 }
-
-// ================= STRUCTURES =================
-class Structure {
-  final bool bosUp;
-  final bool bosDown;
-  final bool chochUp;
-  final bool chochDown;
-
-  Structure({
-    required this.bosUp,
-    required this.bosDown,
-    required this.chochUp,
-    required this.chochDown,
-  });
-}
-
-class Liquidity {
-  final bool sweepHigh;
-  final bool sweepLow;
-  final int equalHighs;
-  final int equalLows;
-
-  Liquidity({
-    required this.sweepHigh,
-    required this.sweepLow,
-    required this.equalHighs,
-    required this.equalLows,
-  });
-}
-
-class OrderBlock {
-  final bool validBullish;
-  final bool validBearish;
-  final double strength;
-
-  OrderBlock({
-    required this.validBullish,
-    required this.validBearish,
-    required this.strength,
-  });
-}
-
-// ================= ENGINE =================
 class MarketAnalysisService {
   MarketAnalysisService._internal();
   static final instance = MarketAnalysisService._internal();
@@ -63,169 +17,82 @@ class MarketAnalysisService {
 
   Stream<MarketAnalysisResult> get analysisStream => _controller.stream;
 
-  final Map<String, int> _lastSize = {};
   final Map<String, MarketAnalysisResult> _latest = {};
-  final Map<String, DateTime> _lastUpdate = {};
-  final Map<String, DateTime> _lastSignalTime = {};
+  final Map<String, bool> _isRunning = {};
+  final Map<String, DateTime> _lastRun = {};
+  final Map<String, DateTime> _lastSignal = {};
 
-  Timer? _globalAnalysisTimer;
-  final Duration signalCooldown = const Duration(seconds: 30);
+  final Duration cooldown = const Duration(seconds: 8);
 
   bool debugMode = true;
-void _log(String message) {
-  print(message);
-}
 
-String _norm(String symbol) {
-  return symbol.toUpperCase().trim();
-}
-  // ================= NORMALIZER (ULTRA FIXED) =================
-  MarketAnalysisResult? latestForSymbol(String symbol) {
-  final normalizedSymbol = _norm(symbol);
-
-  _log("🔍 LOOKUP SYMBOL RAW: $symbol");
-  _log("🔍 LOOKUP SYMBOL NORMALIZED: $normalizedSymbol");
-
-  final analysis = _latest[normalizedSymbol];
-
-  _log("🔍 LOOKUP RESULT: ${analysis != null}");
-
-  return analysis;
-}
+  void _log(String msg) {
+    if (debugMode) print("[TOPDOWN] $msg");
+  }
 
   // ================= START =================
-Future<void> startPairs(List<String> pairs) async {
-  final deriv = DerivService.instance;
+  Future<void> startPairs(List<String> pairs) async {
+    final deriv = DerivService.instance;
 
-  await deriv.connect();
+    await deriv.connect();
 
-  _log("========================================");
-  _log("MARKET ANALYSIS ENGINE STARTING");
-  _log("TOTAL PAIRS RECEIVED: ${pairs.length}");
-  _log("========================================");
-_log("📦 AVAILABLE KEYS: ${_latest.keys.toList()}");
+    _log("🚀 TOP-DOWN ENGINE STARTED");
 
-  // Stop old timer if already running
-  _globalAnalysisTimer?.cancel();
+    for (final p in pairs) {
+      await deriv.subscribe(p);
+    }
 
-  for (final p in pairs) {
+    deriv.stream.listen((event) {
+      final type = event["msg_type"];
+      final echo = event["echo_req"] ?? {};
+      final symbol = echo["ticks_history"];
+
+      if (type == "candles" && symbol != null) {
+        _run(symbol);
+      }
+    });
+  }
+
+  // ================= RUN =================
+  Future<void> _run(String pair) async {
+    final now = DateTime.now();
+
+    if (_isRunning[pair] == true) return;
+
+    if (_lastRun[pair] != null &&
+        now.difference(_lastRun[pair]!).inMilliseconds < 2500) {
+      return;
+    }
+
+    _isRunning[pair] = true;
+    _lastRun[pair] = now;
+
     try {
-      final key = _norm(p);
+      final deriv = DerivService.instance;
 
-      deriv.subscribe(p);
+      final w1 = deriv.getCandles(pair, TF.w1);
+      final d1 = deriv.getCandles(pair, TF.d1);
+      final h4 = deriv.getCandles(pair, TF.h4);
+      final h1 = deriv.getCandles(pair, TF.h1);
 
-      _lastSize[key] = 0;
+      if (h1.length < 120) {
+        _isRunning[pair] = false;
+        return;
+      }
 
-      _log("SUBSCRIBED PAIR → $key");
+      final result = _analyze(pair, w1, d1, h4, h1);
+
+      _latest[pair] = result;
+      _controller.add(result);
+
+      _log("📊 $pair → BUY:${result.canBuy} SELL:${result.canSell}");
     } catch (e) {
-      _log("SUBSCRIBE ERROR → $p");
-      _log("$e");
+      _log("❌ ERROR $pair → $e");
+    } finally {
+      _isRunning[pair] = false;
     }
   }
 
-  _log("========================================");
-  _log("ALL PAIRS SUBSCRIBED");
-  _log("========================================");
-
-  _globalAnalysisTimer = Timer.periodic(
-    const Duration(seconds: 5),
-    (_) async {
-      _log("");
-      _log("========================================");
-      _log("ANALYSIS LOOP START");
-      _log("TIME: ${DateTime.now()}");
-      _log("PAIRS: ${pairs.length}");
-      _log("CACHE SIZE BEFORE: ${_latest.length}");
-      _log("========================================");
-
-      for (final p in pairs) {
-        try {
-          final key = _norm(p);
-
-          _log("----------------------------------------");
-          _log("CHECKING PAIR → $key");
-
-          final h1 = await deriv.getCandles(p, TF.h1);
-
-          _log("H1 CANDLES → ${h1.length}");
-
-          if (h1.isEmpty) {
-            _log("SKIP $key → EMPTY H1");
-            continue;
-          }
-
-          if (h1.length < 120) {
-            _log(
-              "SKIP $key → INSUFFICIENT CANDLES (${h1.length}/120)",
-            );
-            continue;
-          }
-
-          if (_lastSize[key] == h1.length) {
-            _log(
-              "NO NEW CANDLE → $key (${h1.length})",
-            );
-            continue;
-          }
-
-          _lastSize[key] = h1.length;
-
-          _log("FETCHING H4...");
-          final h4 = await deriv.getCandles(p, TF.h4);
-
-          _log("FETCHING D1...");
-          final d1 = await deriv.getCandles(p, TF.d1);
-
-          _log("FETCHING W1...");
-          final w1 = await deriv.getCandles(p, TF.w1);
-
-          _log(
-            "CANDLES → H1:${h1.length} H4:${h4.length} D1:${d1.length} W1:${w1.length}",
-          );
-
-          _log("RUNNING ANALYSIS → $key");
-
-          final result = _analyze(
-            key,
-            w1,
-            d1,
-            h4,
-            h1,
-          );
-
-          _latest[key] = result;
-          _lastUpdate[key] = DateTime.now();
-
-          _controller.add(result);
-
-          _log("CACHE SAVED → $key");
-          _log("VALID TRADE → ${result.isValidTrade}");
-          _log("BUY → ${result.canBuy}");
-          _log("SELL → ${result.canSell}");
-          _log(
-            "CONFIDENCE → ${result.indicators["confidence"]}",
-          );
-
-          _log("CACHE SIZE → ${_latest.length}");
-        } catch (e, s) {
-          _log("ERROR PROCESSING PAIR → $p");
-          _log("ERROR → $e");
-          _log("STACKTRACE →");
-          _log("$s");
-        }
-      }
-
-      _log("");
-      _log("========================================");
-      _log("ANALYSIS LOOP COMPLETE");
-      _log("CACHE SIZE AFTER: ${_latest.length}");
-      _log("CACHE KEYS:");
-      _log("${_latest.keys.toList()}");
-      _log("========================================");
-      _log("");
-    },
-  );
-}
   // ================= ANALYSIS =================
   MarketAnalysisResult _analyze(
     String pair,
@@ -234,13 +101,15 @@ _log("📦 AVAILABLE KEYS: ${_latest.keys.toList()}");
     List<Candle> h4,
     List<Candle> h1,
   ) {
-    final key = _norm(pair);
-
-    if (h1.length < 3) return _emptyResult(key);
+    if (h1.length < 10) return _empty(pair);
 
     final w1Bias = _bias(w1);
     final d1Bias = _bias(d1);
-    final trendAligned = (w1Bias == d1Bias) && w1Bias != MarketBias.none;
+    final structureAligned =
+        w1Bias == d1Bias && w1Bias != MarketBias.none;
+
+    final sweepLow = _sweepLow(h4);
+    final sweepHigh = _sweepHigh(h4);
 
     final last = h1.last;
     final prev = h1[h1.length - 2];
@@ -258,58 +127,82 @@ _log("📦 AVAILABLE KEYS: ${_latest.keys.toList()}");
     double buy = 0;
     double sell = 0;
 
-    if (engulfBull) buy += 40;
-    if (engulfBear) sell += 40;
+    if (w1Bias == MarketBias.buy) buy += 30;
+    if (w1Bias == MarketBias.sell) sell += 30;
 
-    final confidence = max(buy, sell);
+    if (structureAligned && w1Bias == MarketBias.buy) buy += 25;
+    if (structureAligned && w1Bias == MarketBias.sell) sell += 25;
 
-    bool isBuy = buy > sell && confidence >= 60;
-    bool isSell = sell > buy && confidence >= 60;
+    if (sweepLow) buy += 25;
+    if (sweepHigh) sell += 25;
 
-    final lastSignal = _lastSignalTime[key];
+    if (engulfBull) buy += 20;
+    if (engulfBear) sell += 20;
+
+    final total = buy + sell;
+    final confidence = total == 0 ? 0 : (max(buy, sell) / total) * 100;
+    final dominance = (buy - sell).abs();
+
+    final strong = confidence >= 65;
+    final clear = dominance >= 20;
+
+    bool isBuy = strong && clear && buy > sell;
+    bool isSell = strong && clear && sell > buy;
+
+    final lastSignal = _lastSignal[pair];
     final canSend = lastSignal == null ||
-        DateTime.now().difference(lastSignal) > signalCooldown;
+        DateTime.now().difference(lastSignal) > cooldown;
 
     isBuy = isBuy && canSend;
     isSell = isSell && canSend;
 
     if (isBuy || isSell) {
-      _lastSignalTime[key] = DateTime.now();
+      _lastSignal[pair] = DateTime.now();
     }
 
-    _log("ANALYSIS $key → BUY:$buy SELL:$sell CONF:$confidence");
-_log("CACHE KEYS: ${_latest.keys.toList()}");
     return MarketAnalysisResult(
-      symbol: key,
+      symbol: pair,
+
       candles: h1,
       candlesH1: h1,
       candlesM15: h4,
       candlesM30: d1,
       candlesM5: const [],
+
       canBuy: isBuy,
       canSell: isSell,
-      structureValid: true,
+
+      structureValid: structureAligned,
       emaValid: true,
       rsiValid: true,
       confirmationValid: isBuy || isSell,
-      filtersValid: confidence > 60,
+      filtersValid: confidence >= 65,
+
       ema50: const [],
       ema200: const [],
+
       indicators: {
-        "buy": buy,
-        "sell": sell,
+        "w1Bias": w1Bias.toString(),
         "confidence": confidence,
+        "dominance": dominance,
+        "buyScore": buy,
+        "sellScore": sell,
       },
+
       entryCandles: const [],
       structurePoints: const [],
       conditionsMet: const [],
       reasonsFailed: const [],
+
       stopLoss: _atr(h1),
       takeProfit: _atr(h1) * 3,
+
       structureBuy: isBuy,
       structureSell: isSell,
       biasIsBuy: isBuy,
+
       isValidTrade: isBuy || isSell,
+
       risk: RiskModel(
         entry: h1.last.close,
         stopLoss: isBuy
@@ -319,40 +212,54 @@ _log("CACHE KEYS: ${_latest.keys.toList()}");
             ? h1.last.close + _atr(h1) * 3
             : h1.last.close - _atr(h1) * 3,
         lotSize: 0.1,
-        direction: isBuy ? "BUY" : isSell ? "SELL" : "NONE",
+        direction: isBuy
+            ? "BUY"
+            : isSell
+                ? "SELL"
+                : "NONE",
       ),
     );
   }
 
-  // ================= GUARANTEED EMPTY =================
-  MarketAnalysisResult _emptyResult(String key) {
+  // ================= EMPTY =================
+  MarketAnalysisResult _empty(String pair) {
     return MarketAnalysisResult(
-      symbol: key,
+      symbol: pair,
+
       candles: const [],
       candlesH1: const [],
       candlesM15: const [],
       candlesM30: const [],
       candlesM5: const [],
+
       canBuy: false,
       canSell: false,
+
       structureValid: false,
       emaValid: false,
       rsiValid: false,
       confirmationValid: false,
       filtersValid: false,
+
       ema50: const [],
       ema200: const [],
+
       indicators: const {},
+
       entryCandles: const [],
       structurePoints: const [],
       conditionsMet: const [],
-      reasonsFailed: const ["init"],
+      reasonsFailed: const ["no data"],
+
       stopLoss: 0,
       takeProfit: 0,
+
       structureBuy: false,
       structureSell: false,
       biasIsBuy: false,
+
       isValidTrade: false,
+
       risk: RiskModel(
         entry: 0,
         stopLoss: 0,
@@ -365,18 +272,25 @@ _log("CACHE KEYS: ${_latest.keys.toList()}");
 
   // ================= HELPERS =================
   MarketBias _bias(List<Candle> c) {
-    int up = 0, down = 0;
-    for (int i = 1; i < c.length; i++) {
-      if (c[i].close > c[i - 1].close) up++;
-      if (c[i].close < c[i - 1].close) down++;
-    }
+    if (c.length < 10) return MarketBias.none;
 
-    if (up > down + 8) return MarketBias.buy;
-    if (down > up + 8) return MarketBias.sell;
+    final first = c.first.close;
+    final last = c.last.close;
+
+    if (last > first) return MarketBias.buy;
+    if (last < first) return MarketBias.sell;
     return MarketBias.none;
   }
 
+  bool _sweepLow(List<Candle> c) =>
+      c.length > 2 && c.last.low < c[c.length - 2].low;
+
+  bool _sweepHigh(List<Candle> c) =>
+      c.length > 2 && c.last.high > c[c.length - 2].high;
+
   double _atr(List<Candle> c) {
+    if (c.length < 2) return 0;
+
     int len = min(14, c.length - 1);
     double sum = 0;
 
@@ -384,14 +298,11 @@ _log("CACHE KEYS: ${_latest.keys.toList()}");
       sum += (c[i].high - c[i].low);
     }
 
-    return len == 0 ? 0 : sum / len;
+    return sum / len;
   }
 
-  MarketAnalysisResult? latestFor(String pair) {
-    final key = _norm(pair);
+  // ================= FIX REQUIRED BY YOUR ERRORS =================
+  List<String> get latestKeys => _latest.keys.toList();
 
-    _log("LOOKUP → $key EXISTS:${_latest.containsKey(key)}");
-
-    return _latest[key];
-  }
+  MarketAnalysisResult? latestFor(String pair) => _latest[pair];
 }
