@@ -7,6 +7,7 @@ import '../models/risk_model.dart';
 import 'deriv_service.dart';
 
 enum MarketBias { buy, sell, none }
+
 class Structure {
   final bool bosUp;
   final bool bosDown;
@@ -46,6 +47,7 @@ class OrderBlock {
     required this.strength,
   });
 }
+
 class MarketAnalysisService {
   MarketAnalysisService._internal();
   static final instance = MarketAnalysisService._internal();
@@ -59,10 +61,12 @@ class MarketAnalysisService {
   final Map<String, bool> _isRunning = {};
   final Map<String, DateTime> _lastRun = {};
   final Map<String, DateTime> _lastSignal = {};
+  final Map<String, DateTime> _lastEvent = {};
 
   final Duration cooldown = const Duration(seconds: 8);
+
   List<String> get latestKeys => _latest.keys.toList();
-   
+
   bool debugMode = true;
 
   void _log(String msg) {
@@ -89,6 +93,16 @@ class MarketAnalysisService {
 
       if (symbol == null) return;
 
+      // ================= EVENT DEBOUNCE (IMPORTANT FIX) =================
+      final now = DateTime.now();
+      final last = _lastEvent[symbol];
+
+      if (last != null &&
+          now.difference(last).inMilliseconds < 2000) {
+        return;
+      }
+      _lastEvent[symbol] = now;
+
       if (type == "candles" ||
           type == "candles_update" ||
           type == "ohlc") {
@@ -106,7 +120,7 @@ class MarketAnalysisService {
     if (_isRunning[pair] == true) return;
 
     if (_lastRun[pair] != null &&
-        now.difference(_lastRun[pair]!).inMilliseconds < 2500) {
+        now.difference(_lastRun[pair]!).inMilliseconds < 3500) {
       return;
     }
 
@@ -123,8 +137,10 @@ class MarketAnalysisService {
       final d1 = deriv.getCandles(pair, TF.d1);
       final w1 = deriv.getCandles(pair, TF.w1);
 
+      _log("📊 SIZE H1:${h1.length} H4:${h4.length}");
+
       if (h1.length < 120) {
-        _log("⚠️ SKIP $pair → insufficient H1");
+        _log("⚠️ SKIP $pair → insufficient data");
         _isRunning[pair] = false;
         return;
       }
@@ -143,7 +159,7 @@ class MarketAnalysisService {
     }
   }
 
-  // ================= MAIN ANALYSIS (SERVER1 MIRROR) =================
+  // ================= ANALYSIS (SERVER 1 MIRROR STRICT) =================
   MarketAnalysisResult _analyze(
     String pair,
     List<Candle> w1,
@@ -157,20 +173,15 @@ class MarketAnalysisService {
 
     if (h1.length < 3) return _fallback(pair);
 
-    // ================= BIAS (SERVER 1 STYLE) =================
     final w1Bias = _bias(w1);
     final d1Bias = _bias(d1);
 
     final trendAligned =
         (w1Bias == d1Bias) && w1Bias != MarketBias.none;
 
-    // ================= LIQUIDITY =================
     final liquidity = _liquidity(h4);
-
-    // ================= ORDER BLOCK =================
     final ob = _orderBlock(h4);
 
-    // ================= H1 MOMENTUM =================
     final last5 = h1.sublist(max(0, h1.length - 5));
 
     int bull = 0, bear = 0;
@@ -182,7 +193,6 @@ class MarketAnalysisService {
     final h1Buy = bull >= 3;
     final h1Sell = bear >= 3;
 
-    // ================= ENGULF =================
     final last = h1.last;
     final prev = h1[h1.length - 2];
 
@@ -196,7 +206,6 @@ class MarketAnalysisService {
         prev.close > prev.open &&
         last.close < prev.open;
 
-    // ================= SCORE ENGINE (EXACT SERVER 1 COPY) =================
     double buy = 0;
     double sell = 0;
 
@@ -217,19 +226,19 @@ class MarketAnalysisService {
 
     final total = buy + sell;
     final dominance = (buy - sell).abs();
-
     final confidence =
         total == 0 ? 0 : (max(buy, sell) / total) * 100;
 
-    // ================= FINAL FILTERS =================
     final strongTrend = confidence >= 65;
     final clearEdge = dominance >= 25;
     final structureOk = trendAligned;
 
-    bool isBuy = strongTrend && clearEdge && structureOk && buy > sell;
-    bool isSell = strongTrend && clearEdge && structureOk && sell > buy;
+    bool isBuy =
+        strongTrend && clearEdge && structureOk && buy > sell;
 
-    // ================= COOLDOWN =================
+    bool isSell =
+        strongTrend && clearEdge && structureOk && sell > buy;
+
     final lastSignal = _lastSignal[pair];
     final canSend = lastSignal == null ||
         DateTime.now().difference(lastSignal) > cooldown;
@@ -317,6 +326,15 @@ class MarketAnalysisService {
   }
 
   Liquidity _liquidity(List<Candle> c) {
+    if (c.length < 2) {
+      return Liquidity(
+        sweepHigh: false,
+        sweepLow: false,
+        equalHighs: 0,
+        equalLows: 0,
+      );
+    }
+
     return Liquidity(
       sweepHigh: c.last.high > c[c.length - 2].high,
       sweepLow: c.last.low < c[c.length - 2].low,
@@ -420,6 +438,5 @@ class MarketAnalysisService {
     );
   }
 
-  // ================= PUBLIC =================
   MarketAnalysisResult? latestFor(String pair) => _latest[pair];
 }
