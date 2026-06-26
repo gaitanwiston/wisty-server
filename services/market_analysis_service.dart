@@ -73,6 +73,10 @@ class MarketAnalysisService {
     if (debugMode) print("[SERVER2-MIRROR] $msg");
   }
 
+  String _normalize(String s) {
+    return s.toUpperCase().trim().replaceAll("_", "");
+  }
+
   // ================= START =================
   Future<void> startPairs(List<String> pairs) async {
     final deriv = DerivService.instance;
@@ -93,23 +97,23 @@ class MarketAnalysisService {
 
       if (symbol == null) return;
 
-      // ================= EVENT DEBOUNCE (IMPORTANT FIX) =================
       final now = DateTime.now();
-      final last = _lastEvent[symbol];
+      final key = _normalize(symbol);
 
-      if (last != null &&
-          now.difference(last).inMilliseconds < 2000) {
+      // 🔥 GLOBAL EVENT THROTTLE (VERY IMPORTANT)
+      if (_lastEvent[key] != null &&
+          now.difference(_lastEvent[key]!).inMilliseconds < 1500) {
         return;
       }
-      _lastEvent[symbol] = now;
+      _lastEvent[key] = now;
+
+      _log("📩 EVENT → $type | $key");
 
       if (type == "candles" ||
           type == "candles_update" ||
           type == "ohlc") {
-        _run(symbol);
+        _run(key);
       }
-
-      _log("📩 EVENT → $type | $symbol");
     });
   }
 
@@ -120,7 +124,7 @@ class MarketAnalysisService {
     if (_isRunning[pair] == true) return;
 
     if (_lastRun[pair] != null &&
-        now.difference(_lastRun[pair]!).inMilliseconds < 3500) {
+        now.difference(_lastRun[pair]!).inMilliseconds < 3000) {
       return;
     }
 
@@ -137,7 +141,7 @@ class MarketAnalysisService {
       final d1 = deriv.getCandles(pair, TF.d1);
       final w1 = deriv.getCandles(pair, TF.w1);
 
-      _log("📊 SIZE H1:${h1.length} H4:${h4.length}");
+      _log("📊 DATA SIZE H1:${h1.length} H4:${h4.length}");
 
       if (h1.length < 120) {
         _log("⚠️ SKIP $pair → insufficient data");
@@ -150,7 +154,8 @@ class MarketAnalysisService {
       _latest[pair] = result;
       _controller.add(result);
 
-      _log("✅ SIGNAL → BUY:${result.canBuy} SELL:${result.canSell}");
+      _log("✅ CACHE UPDATED → $pair");
+      _log("➡️ BUY:${result.canBuy} SELL:${result.canSell}");
     } catch (e, st) {
       _log("❌ ERROR $pair → $e");
       _log("$st");
@@ -159,7 +164,7 @@ class MarketAnalysisService {
     }
   }
 
-  // ================= ANALYSIS (SERVER 1 MIRROR STRICT) =================
+  // ================= ANALYSIS =================
   MarketAnalysisResult _analyze(
     String pair,
     List<Candle> w1,
@@ -168,10 +173,8 @@ class MarketAnalysisService {
     List<Candle> h1,
   ) {
     _log("══════════════════════════════");
-    _log("📊 MIRROR ANALYSIS: $pair");
+    _log("📊 ANALYSIS: $pair");
     _log("══════════════════════════════");
-
-    if (h1.length < 3) return _fallback(pair);
 
     final w1Bias = _bias(w1);
     final d1Bias = _bias(d1);
@@ -226,6 +229,7 @@ class MarketAnalysisService {
 
     final total = buy + sell;
     final dominance = (buy - sell).abs();
+
     final confidence =
         total == 0 ? 0 : (max(buy, sell) / total) * 100;
 
@@ -239,18 +243,7 @@ class MarketAnalysisService {
     bool isSell =
         strongTrend && clearEdge && structureOk && sell > buy;
 
-    final lastSignal = _lastSignal[pair];
-    final canSend = lastSignal == null ||
-        DateTime.now().difference(lastSignal) > cooldown;
-
-    isBuy = isBuy && canSend;
-    isSell = isSell && canSend;
-
-    if (isBuy || isSell) {
-      _lastSignal[pair] = DateTime.now();
-    }
-
-    _log("BUY:$buy SELL:$sell CONF:$confidence");
+    _log("📊 BUY:$buy SELL:$sell CONF:$confidence");
 
     return MarketAnalysisResult(
       symbol: pair,
@@ -278,7 +271,6 @@ class MarketAnalysisService {
         "confidence": confidence,
         "dominance": dominance,
         "trendAligned": trendAligned,
-        "mode": "SERVER2_MIRROR_SERVER1",
       },
 
       entryCandles: const [],
@@ -355,26 +347,10 @@ class MarketAnalysisService {
     final last = c.last;
     final prev = c[c.length - 2];
 
-    if (last.close > last.open && last.close > prev.high) {
-      return OrderBlock(
-        validBullish: true,
-        validBearish: false,
-        strength: 0.8,
-      );
-    }
-
-    if (last.close < last.open && last.close < prev.low) {
-      return OrderBlock(
-        validBullish: false,
-        validBearish: true,
-        strength: 0.8,
-      );
-    }
-
     return OrderBlock(
-      validBullish: false,
-      validBearish: false,
-      strength: 0.2,
+      validBullish: last.close > last.open && last.close > prev.high,
+      validBearish: last.close < last.open && last.close < prev.low,
+      strength: 0.5,
     );
   }
 
@@ -399,35 +375,26 @@ class MarketAnalysisService {
       candlesM15: const [],
       candlesM30: const [],
       candlesM5: const [],
-
       canBuy: false,
       canSell: false,
-
       structureValid: false,
       emaValid: false,
       rsiValid: false,
       confirmationValid: false,
       filtersValid: false,
-
       ema50: const [],
       ema200: const [],
-
       indicators: const {},
-
       entryCandles: const [],
       structurePoints: const [],
       conditionsMet: const [],
       reasonsFailed: const ["fallback"],
-
       stopLoss: 0,
       takeProfit: 0,
-
       structureBuy: false,
       structureSell: false,
       biasIsBuy: false,
-
       isValidTrade: false,
-
       risk: RiskModel(
         entry: 0,
         stopLoss: 0,
