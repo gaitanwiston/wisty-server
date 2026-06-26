@@ -49,7 +49,7 @@ Future<Response> onRequest(RequestContext context) async {
     await deriv.subscribe(pair);
     await Future.delayed(const Duration(milliseconds: 300));
 
-    final candles = await deriv.getCandlesWithTF(pair);
+    final candles = await deriv.getCandlesWithTF(pair, timeframe: TF.h1);
 
     result[pair] = candles.map((c) {
       final epoch = _parseEpoch(c.epoch);

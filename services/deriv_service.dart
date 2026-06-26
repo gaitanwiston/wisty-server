@@ -39,6 +39,8 @@ class DerivService {
 
   bool get isConnected => _connected && _auth;
 
+  Timer? _keepAlive;
+
   // ================= CONNECT =================
   Future<void> connect([String? token]) async {
     if (_connected || _connecting) return;
@@ -55,6 +57,7 @@ class DerivService {
       (msg) {
         try {
           final data = jsonDecode(msg);
+
           if (data is Map<String, dynamic>) {
             _handle(data);
             _stream.add(data);
@@ -71,7 +74,17 @@ class DerivService {
 
     _send({"authorize": _token});
 
+    _startKeepAlive();
+
     _connecting = false;
+  }
+
+  // ================= KEEP ALIVE =================
+  void _startKeepAlive() {
+    _keepAlive?.cancel();
+    _keepAlive = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (_connected) _send({"ping": 1});
+    });
   }
 
   // ================= HANDLE =================
@@ -91,14 +104,8 @@ class DerivService {
 
       case "candles":
         final echo = data["echo_req"] ?? {};
-
-        final symbol = normalizeSymbol(
-          echo["ticks_history"] ?? "",
-        );
-
-        final tf = _mapTF(
-          echo["granularity"] ?? 60,
-        );
+        final symbol = normalizeSymbol(echo["ticks_history"] ?? "");
+        final tf = _mapTF(echo["granularity"] ?? 60);
 
         final raw = data["candles"] ?? [];
 
@@ -115,6 +122,9 @@ class DerivService {
 
         _data.putIfAbsent(symbol, () => {});
         _data[symbol]![tf] = list;
+
+        // 🔥 FIX: ensure higher TF build (from Deriv1 logic)
+        _buildFallback(symbol);
 
         break;
     }
@@ -169,7 +179,6 @@ class DerivService {
 
     final list = _data[symbol]?[tf] ?? [];
 
-    // 🔥 FIX W1 DERIVATION (IMPORTANT)
     if (tf == TF.w1 && list.isEmpty) {
       final d1 = _data[symbol]?[TF.d1] ?? [];
       return _buildWeeklyFromDaily(d1);
@@ -313,12 +322,12 @@ class DerivService {
     return c.future;
   }
 
+  // ================= RECONNECT =================
   Future<void> _reconnect() async {
     _connected = false;
     _auth = false;
 
     await Future.delayed(const Duration(seconds: 3));
-
     await connect(_token);
 
     final old = List<String>.from(_subscribed);
@@ -389,7 +398,9 @@ class DerivService {
     }
   }
 
-  String normalizeSymbol(String raw) => raw.trim().toUpperCase();
+  String normalizeSymbol(String raw) =>
+      raw.trim().toUpperCase().replaceAll("FRX", "");
+
 Future<List<model.Candle>> getCandlesWithTF(
   String symbolRaw, {
   TF timeframe = TF.h1,
@@ -398,10 +409,8 @@ Future<List<model.Candle>> getCandlesWithTF(
 
   final symbol = normalizeSymbol(symbolRaw);
 
-  // subscribe first
   await subscribeCandles(symbol, tf: timeframe);
 
-  // wait for data to arrive (safe delay)
   int retries = 0;
 
   while ((_data[symbol]?[timeframe] ?? []).isEmpty && retries < 10) {
@@ -411,10 +420,53 @@ Future<List<model.Candle>> getCandlesWithTF(
 
   return _data[symbol]?[timeframe] ?? [];
 }
-  // ================= WEEKLY BUILDER =================
-  List<model.Candle> _buildWeeklyFromDaily(
-    List<model.Candle> d1,
-  ) {
+
+  // ================= FIXED FALLBACK SYSTEM =================
+  void _buildFallback(String symbol) {
+    final m1 = _data[symbol]?[TF.m1] ?? [];
+    final h4 = _data[symbol]?[TF.h4] ?? [];
+    final d1 = _data[symbol]?[TF.d1] ?? [];
+
+    if (m1.length >= 10) {
+      _data[symbol]![TF.h1] = _aggregate(m1, 60);
+      _data[symbol]![TF.h4] = _aggregate(m1, 240);
+      _data[symbol]![TF.d1] = _aggregate(m1, 1440);
+      _data[symbol]![TF.w1] = _aggregate(m1, 10080);
+    }
+
+    if (m1.length < 10 && h4.isNotEmpty) {
+      _data[symbol]![TF.h1] = h4;
+      _data[symbol]![TF.h4] = h4;
+      _data[symbol]![TF.d1] = d1;
+    }
+  }
+
+  List<model.Candle> _aggregate(List<model.Candle> base, int sec) {
+    final out = <model.Candle>[];
+
+    for (final c in base) {
+      final bucket = (c.epoch ~/ sec) * sec;
+
+      if (out.isEmpty || out.last.epoch != bucket) {
+        out.add(c);
+      } else {
+        final last = out.last;
+
+        out[out.length - 1] = model.Candle(
+          epoch: last.epoch,
+          open: last.open,
+          close: c.close,
+          high: max(last.high, c.high),
+          low: min(last.low, c.low),
+          volume: last.volume + c.volume,
+        );
+      }
+    }
+
+    return out;
+  }
+
+  List<model.Candle> _buildWeeklyFromDaily(List<model.Candle> d1) {
     final result = <model.Candle>[];
 
     for (int i = 0; i + 4 < d1.length; i += 5) {
@@ -427,9 +479,9 @@ Future<List<model.Candle>> getCandlesWithTF(
         low: chunk.map((e) => e.low).reduce(min),
         close: chunk.last.close,
         volume: chunk.fold<double>(
-  0.0,
-  (a, b) => a + (b.volume ?? 0.0),
-),
+          0.0,
+          (a, b) => a + (b.volume ?? 0.0),
+        ),
       ));
     }
 
