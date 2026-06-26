@@ -19,21 +19,25 @@ class MarketAnalysisService {
 
   final Map<String, MarketAnalysisResult> _latest = {};
   List<String> get latestKeys => _latest.keys.toList();
-  final Set<String> _queue = {};
 
+  final Set<String> _queue = {};
   final Map<String, DateTime> _lastRun = {};
   final Map<String, DateTime> _lastEvent = {};
 
   final Duration cooldown = const Duration(seconds: 3);
-
   bool debugMode = true;
 
   void _log(String msg) {
     if (debugMode) print("[SERVER2-ENGINE] $msg");
   }
 
+  // 🔥 FIX 1: Proper normalization (FRXUSDCAD issue fix)
   String _normalize(String s) {
-    return s.toUpperCase().trim().replaceAll("_", "");
+    return s
+        .toUpperCase()
+        .replaceAll("FRX", "")
+        .replaceAll("_", "")
+        .trim();
   }
 
   // ================= START =================
@@ -41,8 +45,7 @@ class MarketAnalysisService {
     final deriv = DerivService.instance;
 
     await deriv.connect();
-
-    _log("🚀 ENGINE STARTED (ALL SYMBOLS MODE)");
+    _log("🚀 ENGINE STARTED");
 
     for (final p in pairs) {
       final symbol = _normalize(p);
@@ -59,7 +62,6 @@ class MarketAnalysisService {
       final symbol = _normalize(raw);
       final now = DateTime.now();
 
-      // throttle events
       if (_lastEvent[symbol] != null &&
           now.difference(_lastEvent[symbol]!).inMilliseconds < 1200) {
         return;
@@ -67,26 +69,19 @@ class MarketAnalysisService {
 
       _lastEvent[symbol] = now;
 
-      _log("📩 EVENT → $type | $symbol");
-
       if (type == "candles" ||
           type == "candles_update" ||
           type == "ohlc") {
-        _addToQueue(symbol);
+        _queue.add(symbol);
       }
     });
 
-    // processor loop
     Timer.periodic(const Duration(milliseconds: 800), (_) {
       _processQueue();
     });
   }
 
-  // ================= QUEUE SYSTEM =================
-  void _addToQueue(String symbol) {
-    _queue.add(symbol);
-  }
-
+  // ================= QUEUE =================
   Future<void> _processQueue() async {
     if (_queue.isEmpty) return;
 
@@ -110,8 +105,6 @@ class MarketAnalysisService {
     try {
       final deriv = DerivService.instance;
 
-      _log("🔥 ANALYSIS → $pair");
-
       final h1 = deriv.getCandles(pair, TF.h1);
       final h4 = deriv.getCandles(pair, TF.h4);
       final d1 = deriv.getCandles(pair, TF.d1);
@@ -127,7 +120,7 @@ class MarketAnalysisService {
       _latest[pair] = result;
       _controller.add(result);
 
-      _log("✅ UPDATED → $pair | BUY:${result.canBuy} SELL:${result.canSell}");
+      _log("✅ UPDATED $pair | BUY:${result.canBuy} SELL:${result.canSell}");
     } catch (e) {
       _log("❌ ERROR $pair → $e");
     }
@@ -192,6 +185,50 @@ class MarketAnalysisService {
     final isBuy = strong && buy > sell;
     final isSell = strong && sell > buy;
 
+    final atr = _atr(h1);
+
+    // 🔥 FIX 2: Prevent zero price crash
+    final entry = h1.last.close;
+    if (entry <= 0 || atr <= 0) {
+      return MarketAnalysisResult(
+        symbol: pair,
+        candles: h1,
+        candlesH1: h1,
+        candlesM15: h4,
+        candlesM30: d1,
+        candlesM5: const [],
+        canBuy: false,
+        canSell: false,
+        structureValid: false,
+        emaValid: false,
+        rsiValid: false,
+        confirmationValid: false,
+        filtersValid: false,
+        ema50: const [],
+        ema200: const [],
+        indicators: {
+          "error": "INVALID_PRICE_DATA"
+        },
+        entryCandles: const [],
+        structurePoints: const [],
+        conditionsMet: const [],
+        reasonsFailed: const ["Invalid entry or ATR = 0"],
+        stopLoss: 0,
+        takeProfit: 0,
+        structureBuy: false,
+        structureSell: false,
+        biasIsBuy: false,
+        isValidTrade: false,
+        risk: RiskModel(
+          entry: 0,
+          stopLoss: 0,
+          takeProfit: 0,
+          lotSize: 0,
+          direction: "NONE",
+        ),
+      );
+    }
+
     return MarketAnalysisResult(
       symbol: pair,
       candles: h1,
@@ -224,8 +261,8 @@ class MarketAnalysisService {
       conditionsMet: const [],
       reasonsFailed: const [],
 
-      stopLoss: _atr(h1),
-      takeProfit: _atr(h1) * 3,
+      stopLoss: isBuy ? entry - atr : entry + atr,
+      takeProfit: isBuy ? entry + atr * 3 : entry - atr * 3,
 
       structureBuy: isBuy,
       structureSell: isSell,
@@ -234,13 +271,9 @@ class MarketAnalysisService {
       isValidTrade: isBuy || isSell,
 
       risk: RiskModel(
-        entry: h1.last.close,
-        stopLoss: isBuy
-            ? h1.last.close - _atr(h1)
-            : h1.last.close + _atr(h1),
-        takeProfit: isBuy
-            ? h1.last.close + _atr(h1) * 3
-            : h1.last.close - _atr(h1) * 3,
+        entry: entry,
+        stopLoss: isBuy ? entry - atr : entry + atr,
+        takeProfit: isBuy ? entry + atr * 3 : entry - atr * 3,
         lotSize: 0.1,
         direction: isBuy
             ? "BUY"
