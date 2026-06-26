@@ -55,7 +55,7 @@ class ActiveTrade {
   });
 }
 
-/// ================= DEBUG HELPER =================
+/// ================= DEBUG =================
 void _trace(String title, dynamic msg) {
   print("\n[SERVER2-TRACE] ======================");
   print("[SERVER2-TRACE] $title");
@@ -63,22 +63,21 @@ void _trace(String title, dynamic msg) {
   print("[SERVER2-TRACE] ======================\n");
 }
 
-/// ================= ENTRY POINT =================
+/// ================= ENTRY =================
 Future<Response> onRequest(RequestContext context) async {
   if (context.request.method == HttpMethod.get) {
     return Response.json(
       body: {
         "success": true,
         "active_trades": _activeTrades.length,
+        "cache_size": MarketAnalysisService.instance.latestKeys.length,
       },
     );
   }
 
   if (context.request.method == HttpMethod.post) {
     final body = await context.request.json();
-
     _trace("RAW UI PAYLOAD", body);
-
     return _handleSignal(body);
   }
 
@@ -104,56 +103,49 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
     final symbolRaw = json['symbol']?.toString() ?? '';
     final direction = json['direction']?.toString() ?? '';
     final confidence = (json['confidence'] as num?)?.toDouble() ?? 0.0;
-    final timestamp = json['timestamp']?.toString() ?? '';
+
+    final timestamp = json['timestamp']?.toString().isNotEmpty == true
+        ? json['timestamp'].toString()
+        : DateTime.now().millisecondsSinceEpoch.toString();
 
     final symbol = _normalizeSymbol(symbolRaw);
-    final safeTimestamp = timestamp.isNotEmpty
-    ? timestamp
-    : DateTime.now().millisecondsSinceEpoch.toString();
-
-final signalId = "${symbol}_$safeTimestamp";
+    final signalId = "${symbol}_$timestamp";
 
     _trace("STEP 2 - NORMALIZED DATA", {
-      "symbolRaw": symbolRaw,
+      "raw": symbolRaw,
       "symbol": symbol,
       "direction": direction,
       "confidence": confidence,
       "signalId": signalId,
     });
 
-    print("\n══════════════════════════════");
-    print("📥 TRADE SIGNAL");
-    print("SYMBOL: $symbol");
-    print("DIRECTION: $direction");
-    print("CONFIDENCE: $confidence");
+    print("\n📥 SIGNAL → $symbol | $direction | $confidence");
 
     if (_processedSignals.contains(signalId)) {
-      _trace("DECISION", "DUPLICATE SIGNAL IGNORED");
+      _trace("DECISION", "DUPLICATE");
       return Response.json(body: {"status": "DUPLICATE"});
     }
     _processedSignals.add(signalId);
 
     if (confidence < MIN_CONFIDENCE) {
-      _trace("DECISION", "REJECTED - LOW CONFIDENCE");
+      _trace("DECISION", "LOW CONFIDENCE");
       return Response.json(body: {"status": "LOW_CONFIDENCE"});
     }
 
     if (_activeTrades.length >= MAX_TRADES) {
-      _trace("DECISION", "REJECTED - MAX TRADES REACHED");
+      _trace("DECISION", "MAX TRADES");
       return Response.json(body: {"status": "MAX_TRADES"});
     }
 
     CURRENT_BALANCE = await _getBalance();
 
-    if (START_BALANCE == 0) {
-      START_BALANCE = CURRENT_BALANCE;
-    }
+    if (START_BALANCE == 0) START_BALANCE = CURRENT_BALANCE;
 
     _checkEquityProtection();
     _checkDailyLimits();
 
     if (KILL_SWITCH) {
-      _trace("DECISION", "KILL SWITCH ACTIVE");
+      _trace("DECISION", "KILL SWITCH");
       return Response.json(body: {"status": "KILL_SWITCH"});
     }
 
@@ -164,41 +156,38 @@ final signalId = "${symbol}_$safeTimestamp";
 
     final analysis = service.latestFor(symbol);
 
-    _trace("STEP 4 - ANALYSIS RESULT", analysis != null);
+    _trace("STEP 4 - ANALYSIS EXISTS", analysis != null);
 
     if (analysis != null) {
-      _trace("STEP 4.1 - ANALYSIS DETAILS", analysis.indicators);
+      _trace("ANALYSIS DETAILS", analysis.indicators);
       _trace("CAN BUY", analysis.canBuy);
       _trace("CAN SELL", analysis.canSell);
+      _trace("IS VALID", analysis.isValidTrade);
     }
 
     if (analysis == null) {
       _trace("DECISION", "NO ANALYSIS FOUND");
-      return Response.json(
-        body: {"status": "REJECTED", "reason": "NO_ANALYSIS"},
-      );
+      return Response.json(body: {"status": "NO_ANALYSIS"});
     }
 
     if (!analysis.isValidTrade) {
       _trace("DECISION", "INVALID ANALYSIS");
-      return Response.json(
-        body: {"status": "REJECTED", "reason": "INVALID_ANALYSIS"},
-      );
+      return Response.json(body: {"status": "INVALID_ANALYSIS"});
     }
 
-    _trace("DECISION", "ANALYSIS APPROVED");
+    _trace("DECISION", "APPROVED");
 
     /// ================= TRADE =================
     final deriv = DerivService.instance;
 
-    final entry = (json['entry'] as num).toDouble();
-    final sl = (json['stopLoss'] as num).toDouble();
-    final tp = (json['takeProfit'] as num).toDouble();
+    final entry = (json['entry'] as num?)?.toDouble() ?? 0.0;
+    final sl = (json['stopLoss'] as num?)?.toDouble() ?? 0.0;
+    final tp = (json['takeProfit'] as num?)?.toDouble() ?? 0.0;
 
     final isBuy = direction.toUpperCase() == "BUY";
     final stake = _calculateStake(confidence, CURRENT_BALANCE);
 
-    _trace("STEP 5 - TRADE EXECUTION", {
+    _trace("TRADE EXECUTION", {
       "symbol": symbol,
       "type": isBuy ? "BUY" : "SELL",
       "entry": entry,
@@ -207,21 +196,14 @@ final signalId = "${symbol}_$safeTimestamp";
       "stake": stake,
     });
 
-    final contractId = await deriv.placeTrade(
-      symbol,
-      isBuy,
-      stake: stake,
-    );
+    final contractId = await deriv.placeTrade(symbol, isBuy, stake: stake);
 
     if (contractId == null) {
       _trace("ERROR", "TRADE FAILED");
-      return Response.json(
-        statusCode: 500,
-        body: {"error": "TRADE_FAILED"},
-      );
+      return Response.json(body: {"error": "TRADE_FAILED"});
     }
 
-    _trace("SUCCESS", "CONTRACT CREATED: $contractId");
+    _trace("SUCCESS", contractId);
 
     final trade = ActiveTrade(
       contractId: contractId,
@@ -230,7 +212,6 @@ final signalId = "${symbol}_$safeTimestamp";
       entry: entry,
       sl: sl,
       tp: tp,
-      current: entry,
     );
 
     _activeTrades[contractId] = trade;
@@ -244,38 +225,29 @@ final signalId = "${symbol}_$safeTimestamp";
     });
 
   } catch (e, st) {
-    _trace("FATAL ERROR", e);
-    _trace("STACKTRACE", st);
-
-    return Response.json(
-      statusCode: 500,
-      body: {"error": "$e"},
-    );
+    _trace("ERROR", e);
+    _trace("STACK", st);
+    return Response.json(statusCode: 500, body: {"error": "$e"});
   }
 }
 
-/// ================= EQUITY =================
+/// ================= BALANCE =================
 Future<double> _getBalance() async {
   final deriv = DerivService.instance;
-
-  if (!deriv.isConnected) {
-    await deriv.connect();
-  }
-
+  if (!deriv.isConnected) await deriv.connect();
   return deriv.getBalance();
 }
 
-/// ================= EQUITY PROTECTION =================
+/// ================= EQUITY =================
 void _checkEquityProtection() {
   if (START_BALANCE == 0) return;
 
-  final drawdown =
-      ((START_BALANCE - CURRENT_BALANCE) / START_BALANCE) * 100;
+  final dd = ((START_BALANCE - CURRENT_BALANCE) / START_BALANCE) * 100;
 
-  if (drawdown >= MAX_DRAWDOWN_PERCENT) {
+  if (dd >= MAX_DRAWDOWN_PERCENT) {
     KILL_SWITCH = true;
     AUTO_TRADING_ENABLED = false;
-    _trace("RISK", "DRAWDOWN HIT $drawdown%");
+    _trace("RISK", "DRAWDOWN $dd%");
   }
 }
 
@@ -290,59 +262,54 @@ void _checkDailyLimits() {
     DAY_START_BALANCE = CURRENT_BALANCE;
   }
 
-  final pnl =
-      ((CURRENT_BALANCE - DAY_START_BALANCE) / DAY_START_BALANCE) * 100;
+  final pnl = DAY_START_BALANCE == 0
+      ? 0
+      : ((CURRENT_BALANCE - DAY_START_BALANCE) / DAY_START_BALANCE) * 100;
 
   _trace("PNL", pnl);
 
-  if (pnl >= DAILY_PROFIT_TARGET_PERCENT) {
+  if (pnl >= DAILY_PROFIT_TARGET_PERCENT ||
+      pnl <= -DAILY_LOSS_LIMIT_PERCENT) {
     KILL_SWITCH = true;
     AUTO_TRADING_ENABLED = false;
-    _trace("RISK", "DAILY PROFIT HIT");
-  }
-
-  if (pnl <= -DAILY_LOSS_LIMIT_PERCENT) {
-    KILL_SWITCH = true;
-    AUTO_TRADING_ENABLED = false;
-    _trace("RISK", "DAILY LOSS HIT");
+    _trace("RISK", "DAILY LIMIT HIT");
   }
 }
+
 /// ================= SUBSCRIBE =================
 void _subscribeToTrade(ActiveTrade trade) {
   final deriv = DerivService.instance;
 
-  final sub = deriv.subscribeContract(
-    trade.contractId,
-    (tick) async {
-      if (trade.closed) return;
+  final sub = deriv.subscribeContract(trade.contractId, (tick) async {
+    if (trade.closed) return;
 
-      final price = (tick['price'] as num? ?? 0).toDouble();
-      trade.current = price;
+    final price = (tick['price'] as num? ?? 0).toDouble();
+    trade.current = price;
 
-      final risk = (trade.entry - trade.sl).abs();
-      if (risk == 0) return;
+    final risk = (trade.entry - trade.sl).abs();
+    if (risk == 0) return;
 
-      final rr = trade.buy
-          ? (price - trade.entry) / risk
-          : (trade.entry - price) / risk;
+    final rr = trade.buy
+        ? (price - trade.entry) / risk
+        : (trade.entry - price) / risk;
 
-      if (!trade.breakeven && rr >= 1) {
-        trade.sl = trade.entry;
-        trade.breakeven = true;
-      }
+    if (!trade.breakeven && rr >= 1) {
+      trade.sl = trade.entry;
+      trade.breakeven = true;
+    }
 
-      final tpHit = trade.buy ? price >= trade.tp : price <= trade.tp;
-      final slHit = trade.buy ? price <= trade.sl : price >= trade.sl;
+    final tpHit = trade.buy ? price >= trade.tp : price <= trade.tp;
+    final slHit = trade.buy ? price <= trade.sl : price >= trade.sl;
 
-      if (tpHit || slHit) {
-        await _closeTrade(trade, reason: tpHit ? "TP" : "SL");
-      }
-    },
-  );
+    if (tpHit || slHit) {
+      await _closeTrade(trade, reason: tpHit ? "TP" : "SL");
+    }
+  });
 
   _subscriptions[trade.contractId] = sub;
 }
-/// ================= CLOSE TRADE =================
+
+/// ================= CLOSE =================
 Future<void> _closeTrade(ActiveTrade trade, {required String reason}) async {
   if (trade.closed) return;
 
@@ -351,54 +318,45 @@ Future<void> _closeTrade(ActiveTrade trade, {required String reason}) async {
   try {
     await DerivService.instance.closeTradeById(trade.contractId);
   } catch (e) {
-    print("❌ CLOSE TRADE ERROR: $e");
+    _trace("CLOSE ERROR", e);
   }
 
-  final sub = _subscriptions[trade.contractId];
-  if (sub != null) {
-    await sub.cancel();
-    _subscriptions.remove(trade.contractId);
-  }
-
+  _subscriptions[trade.contractId]?.cancel();
+  _subscriptions.remove(trade.contractId);
   _activeTrades.remove(trade.contractId);
-
-  if (reason == "SL") {
-    lossStreak++;
-  } else {
-    lossStreak = 0;
-  }
 
   CURRENT_BALANCE = await _getBalance();
 
   _checkEquityProtection();
   _checkDailyLimits();
 
-  print("\n========== TRADE CLOSED ==========");
-  print("CONTRACT: ${trade.contractId}");
-  print("REASON: $reason");
-  print("BALANCE: $CURRENT_BALANCE");
+  _trace("TRADE CLOSED", {
+    "contract": trade.contractId,
+    "reason": reason,
+    "balance": CURRENT_BALANCE,
+  });
 }
-String _normalizeSymbol(String symbol) {
-  final s = symbol.toUpperCase().trim();
 
-  if (s.startsWith("FRX")) {
-    return s; // forex direct
-  }
+/// ================= SYMBOL NORMALIZER =================
+String _normalizeSymbol(String s) {
+  final x = s.toUpperCase().trim();
 
-  if (s.startsWith("OTC_")) return s;
-  if (s.startsWith("BOOM")) return s;
-  if (s.startsWith("CRASH")) return s;
-  if (s.startsWith("JD")) return s;
+  if (x.startsWith("FRX")) return x;
+  if (x.startsWith("OTC_")) return x;
+  if (x.startsWith("BOOM")) return x;
+  if (x.startsWith("CRASH")) return x;
+  if (x.startsWith("JD")) return x;
 
-  return s;
+  return x;
 }
+
 /// ================= STAKE =================
 double _calculateStake(double confidence, double balance) {
-  final baseRisk = balance * 0.01;
+  final base = balance * 0.01;
 
-  if (confidence > 0.88) return baseRisk * 1.5;
-  if (confidence > 0.80) return baseRisk;
-  if (confidence > 0.75) return baseRisk * 0.7;
+  if (confidence > 0.88) return base * 1.5;
+  if (confidence > 0.80) return base;
+  if (confidence > 0.75) return base * 0.7;
 
-  return baseRisk * 0.5;
+  return base * 0.5;
 }
