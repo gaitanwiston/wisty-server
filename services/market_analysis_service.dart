@@ -7,7 +7,45 @@ import '../models/risk_model.dart';
 import 'deriv_service.dart';
 
 enum MarketBias { buy, sell, none }
+class Structure {
+  final bool bosUp;
+  final bool bosDown;
+  final bool chochUp;
+  final bool chochDown;
 
+  Structure({
+    required this.bosUp,
+    required this.bosDown,
+    required this.chochUp,
+    required this.chochDown,
+  });
+}
+
+class Liquidity {
+  final bool sweepHigh;
+  final bool sweepLow;
+  final int equalHighs;
+  final int equalLows;
+
+  Liquidity({
+    required this.sweepHigh,
+    required this.sweepLow,
+    required this.equalHighs,
+    required this.equalLows,
+  });
+}
+
+class OrderBlock {
+  final bool validBullish;
+  final bool validBearish;
+  final double strength;
+
+  OrderBlock({
+    required this.validBullish,
+    required this.validBearish,
+    required this.strength,
+  });
+}
 class MarketAnalysisService {
   MarketAnalysisService._internal();
   static final instance = MarketAnalysisService._internal();
@@ -23,11 +61,12 @@ class MarketAnalysisService {
   final Map<String, DateTime> _lastSignal = {};
 
   final Duration cooldown = const Duration(seconds: 8);
-
+  List<String> get latestKeys => _latest.keys.toList();
+   
   bool debugMode = true;
 
   void _log(String msg) {
-    if (debugMode) print("[TOPDOWN] $msg");
+    if (debugMode) print("[SERVER2-MIRROR] $msg");
   }
 
   // ================= START =================
@@ -36,10 +75,11 @@ class MarketAnalysisService {
 
     await deriv.connect();
 
-    _log("🚀 TOP-DOWN ENGINE STARTED");
+    _log("🚀 SERVER2 STARTED (MIRROR MODE)");
 
     for (final p in pairs) {
       await deriv.subscribe(p);
+      _isRunning[p] = false;
     }
 
     deriv.stream.listen((event) {
@@ -47,9 +87,15 @@ class MarketAnalysisService {
       final echo = event["echo_req"] ?? {};
       final symbol = echo["ticks_history"];
 
-      if (type == "candles" && symbol != null) {
+      if (symbol == null) return;
+
+      if (type == "candles" ||
+          type == "candles_update" ||
+          type == "ohlc") {
         _run(symbol);
       }
+
+      _log("📩 EVENT → $type | $symbol");
     });
   }
 
@@ -70,12 +116,15 @@ class MarketAnalysisService {
     try {
       final deriv = DerivService.instance;
 
-      final w1 = deriv.getCandles(pair, TF.w1);
-      final d1 = deriv.getCandles(pair, TF.d1);
-      final h4 = deriv.getCandles(pair, TF.h4);
+      _log("🔥 ANALYSIS → $pair");
+
       final h1 = deriv.getCandles(pair, TF.h1);
+      final h4 = deriv.getCandles(pair, TF.h4);
+      final d1 = deriv.getCandles(pair, TF.d1);
+      final w1 = deriv.getCandles(pair, TF.w1);
 
       if (h1.length < 120) {
+        _log("⚠️ SKIP $pair → insufficient H1");
         _isRunning[pair] = false;
         return;
       }
@@ -85,15 +134,16 @@ class MarketAnalysisService {
       _latest[pair] = result;
       _controller.add(result);
 
-      _log("📊 $pair → BUY:${result.canBuy} SELL:${result.canSell}");
-    } catch (e) {
+      _log("✅ SIGNAL → BUY:${result.canBuy} SELL:${result.canSell}");
+    } catch (e, st) {
       _log("❌ ERROR $pair → $e");
+      _log("$st");
     } finally {
       _isRunning[pair] = false;
     }
   }
 
-  // ================= ANALYSIS =================
+  // ================= MAIN ANALYSIS (SERVER1 MIRROR) =================
   MarketAnalysisResult _analyze(
     String pair,
     List<Candle> w1,
@@ -101,16 +151,38 @@ class MarketAnalysisService {
     List<Candle> h4,
     List<Candle> h1,
   ) {
-    if (h1.length < 10) return _empty(pair);
+    _log("══════════════════════════════");
+    _log("📊 MIRROR ANALYSIS: $pair");
+    _log("══════════════════════════════");
 
+    if (h1.length < 3) return _fallback(pair);
+
+    // ================= BIAS (SERVER 1 STYLE) =================
     final w1Bias = _bias(w1);
     final d1Bias = _bias(d1);
-    final structureAligned =
-        w1Bias == d1Bias && w1Bias != MarketBias.none;
 
-    final sweepLow = _sweepLow(h4);
-    final sweepHigh = _sweepHigh(h4);
+    final trendAligned =
+        (w1Bias == d1Bias) && w1Bias != MarketBias.none;
 
+    // ================= LIQUIDITY =================
+    final liquidity = _liquidity(h4);
+
+    // ================= ORDER BLOCK =================
+    final ob = _orderBlock(h4);
+
+    // ================= H1 MOMENTUM =================
+    final last5 = h1.sublist(max(0, h1.length - 5));
+
+    int bull = 0, bear = 0;
+    for (final c in last5) {
+      if (c.close > c.open) bull++;
+      if (c.close < c.open) bear++;
+    }
+
+    final h1Buy = bull >= 3;
+    final h1Sell = bear >= 3;
+
+    // ================= ENGULF =================
     final last = h1.last;
     final prev = h1[h1.length - 2];
 
@@ -124,31 +196,40 @@ class MarketAnalysisService {
         prev.close > prev.open &&
         last.close < prev.open;
 
+    // ================= SCORE ENGINE (EXACT SERVER 1 COPY) =================
     double buy = 0;
     double sell = 0;
 
-    if (w1Bias == MarketBias.buy) buy += 30;
-    if (w1Bias == MarketBias.sell) sell += 30;
+    if (trendAligned && w1Bias == MarketBias.buy) buy += 35;
+    if (trendAligned && w1Bias == MarketBias.sell) sell += 35;
 
-    if (structureAligned && w1Bias == MarketBias.buy) buy += 25;
-    if (structureAligned && w1Bias == MarketBias.sell) sell += 25;
+    if (liquidity.sweepLow) buy += 25;
+    if (liquidity.sweepHigh) sell += 25;
 
-    if (sweepLow) buy += 25;
-    if (sweepHigh) sell += 25;
+    if (ob.validBullish) buy += 25;
+    if (ob.validBearish) sell += 25;
 
-    if (engulfBull) buy += 20;
-    if (engulfBear) sell += 20;
+    if (h1Buy) buy += 15;
+    if (h1Sell) sell += 15;
+
+    if (engulfBull) buy += 15;
+    if (engulfBear) sell += 15;
 
     final total = buy + sell;
-    final confidence = total == 0 ? 0 : (max(buy, sell) / total) * 100;
     final dominance = (buy - sell).abs();
 
-    final strong = confidence >= 65;
-    final clear = dominance >= 20;
+    final confidence =
+        total == 0 ? 0 : (max(buy, sell) / total) * 100;
 
-    bool isBuy = strong && clear && buy > sell;
-    bool isSell = strong && clear && sell > buy;
+    // ================= FINAL FILTERS =================
+    final strongTrend = confidence >= 65;
+    final clearEdge = dominance >= 25;
+    final structureOk = trendAligned;
 
+    bool isBuy = strongTrend && clearEdge && structureOk && buy > sell;
+    bool isSell = strongTrend && clearEdge && structureOk && sell > buy;
+
+    // ================= COOLDOWN =================
     final lastSignal = _lastSignal[pair];
     final canSend = lastSignal == null ||
         DateTime.now().difference(lastSignal) > cooldown;
@@ -160,9 +241,10 @@ class MarketAnalysisService {
       _lastSignal[pair] = DateTime.now();
     }
 
+    _log("BUY:$buy SELL:$sell CONF:$confidence");
+
     return MarketAnalysisResult(
       symbol: pair,
-
       candles: h1,
       candlesH1: h1,
       candlesM15: h4,
@@ -172,7 +254,7 @@ class MarketAnalysisService {
       canBuy: isBuy,
       canSell: isSell,
 
-      structureValid: structureAligned,
+      structureValid: true,
       emaValid: true,
       rsiValid: true,
       confirmationValid: isBuy || isSell,
@@ -182,11 +264,12 @@ class MarketAnalysisService {
       ema200: const [],
 
       indicators: {
-        "w1Bias": w1Bias.toString(),
+        "buy": buy,
+        "sell": sell,
         "confidence": confidence,
         "dominance": dominance,
-        "buyScore": buy,
-        "sellScore": sell,
+        "trendAligned": trendAligned,
+        "mode": "SERVER2_MIRROR_SERVER1",
       },
 
       entryCandles: const [],
@@ -221,11 +304,78 @@ class MarketAnalysisService {
     );
   }
 
-  // ================= EMPTY =================
-  MarketAnalysisResult _empty(String pair) {
+  // ================= HELPERS =================
+  MarketBias _bias(List<Candle> c) {
+    if (c.length < 10) return MarketBias.none;
+
+    final first = c.first.close;
+    final last = c.last.close;
+
+    if (last > first) return MarketBias.buy;
+    if (last < first) return MarketBias.sell;
+    return MarketBias.none;
+  }
+
+  Liquidity _liquidity(List<Candle> c) {
+    return Liquidity(
+      sweepHigh: c.last.high > c[c.length - 2].high,
+      sweepLow: c.last.low < c[c.length - 2].low,
+      equalHighs: 0,
+      equalLows: 0,
+    );
+  }
+
+  OrderBlock _orderBlock(List<Candle> c) {
+    if (c.length < 3) {
+      return OrderBlock(
+        validBullish: false,
+        validBearish: false,
+        strength: 0,
+      );
+    }
+
+    final last = c.last;
+    final prev = c[c.length - 2];
+
+    if (last.close > last.open && last.close > prev.high) {
+      return OrderBlock(
+        validBullish: true,
+        validBearish: false,
+        strength: 0.8,
+      );
+    }
+
+    if (last.close < last.open && last.close < prev.low) {
+      return OrderBlock(
+        validBullish: false,
+        validBearish: true,
+        strength: 0.8,
+      );
+    }
+
+    return OrderBlock(
+      validBullish: false,
+      validBearish: false,
+      strength: 0.2,
+    );
+  }
+
+  double _atr(List<Candle> c) {
+    if (c.length < 2) return 0;
+
+    int len = min(14, c.length - 1);
+    double sum = 0;
+
+    for (int i = c.length - len; i < c.length; i++) {
+      sum += (c[i].high - c[i].low);
+    }
+
+    return sum / len;
+  }
+
+  MarketAnalysisResult _fallback(String pair) {
     return MarketAnalysisResult(
       symbol: pair,
-
       candles: const [],
       candlesH1: const [],
       candlesM15: const [],
@@ -249,7 +399,7 @@ class MarketAnalysisService {
       entryCandles: const [],
       structurePoints: const [],
       conditionsMet: const [],
-      reasonsFailed: const ["no data"],
+      reasonsFailed: const ["fallback"],
 
       stopLoss: 0,
       takeProfit: 0,
@@ -270,39 +420,6 @@ class MarketAnalysisService {
     );
   }
 
-  // ================= HELPERS =================
-  MarketBias _bias(List<Candle> c) {
-    if (c.length < 10) return MarketBias.none;
-
-    final first = c.first.close;
-    final last = c.last.close;
-
-    if (last > first) return MarketBias.buy;
-    if (last < first) return MarketBias.sell;
-    return MarketBias.none;
-  }
-
-  bool _sweepLow(List<Candle> c) =>
-      c.length > 2 && c.last.low < c[c.length - 2].low;
-
-  bool _sweepHigh(List<Candle> c) =>
-      c.length > 2 && c.last.high > c[c.length - 2].high;
-
-  double _atr(List<Candle> c) {
-    if (c.length < 2) return 0;
-
-    int len = min(14, c.length - 1);
-    double sum = 0;
-
-    for (int i = c.length - len; i < c.length; i++) {
-      sum += (c[i].high - c[i].low);
-    }
-
-    return sum / len;
-  }
-
-  // ================= FIX REQUIRED BY YOUR ERRORS =================
-  List<String> get latestKeys => _latest.keys.toList();
-
+  // ================= PUBLIC =================
   MarketAnalysisResult? latestFor(String pair) => _latest[pair];
 }

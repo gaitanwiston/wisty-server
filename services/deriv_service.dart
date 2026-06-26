@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/candle.dart' as model;
 
-const String derivToken = "YOUR_TOKEN_HERE";
+const String derivToken =
+    "pat_0fccfffc5d1eaace805fb961cd606399a8665f15e6e40da9cdd313a67ac8ec08";
+
 const int derivAppId = 1089;
 
 enum TF { m1, h1, h4, d1, w1 }
@@ -43,19 +46,25 @@ class DerivService {
     _connecting = true;
     _token = token ?? derivToken;
 
-    final uri =
-        Uri.parse("wss://ws.derivws.com/websockets/v3?app_id=$derivAppId");
+    final uri = Uri.parse(
+        "wss://ws.derivws.com/websockets/v3?app_id=$derivAppId");
 
     _channel = WebSocketChannel.connect(uri);
 
-    _sub = _channel!.stream.listen((msg) {
-      final data = jsonDecode(msg);
-
-      if (data is Map<String, dynamic>) {
-        _handle(data);
-        _stream.add(data);
-      }
-    }, onError: (_) => _reconnect(), onDone: _reconnect);
+    _sub = _channel!.stream.listen(
+      (msg) {
+        try {
+          final data = jsonDecode(msg);
+          if (data is Map<String, dynamic>) {
+            _handle(data);
+            _stream.add(data);
+          }
+        } catch (_) {}
+      },
+      onError: (_) => _reconnect(),
+      onDone: _reconnect,
+      cancelOnError: true,
+    );
 
     _connected = true;
     _auth = false;
@@ -82,12 +91,18 @@ class DerivService {
 
       case "candles":
         final echo = data["echo_req"] ?? {};
-        final symbol = normalizeSymbol(echo["ticks_history"] ?? "");
-        final tf = _mapTF(echo["granularity"] ?? 60);
+
+        final symbol = normalizeSymbol(
+          echo["ticks_history"] ?? "",
+        );
+
+        final tf = _mapTF(
+          echo["granularity"] ?? 60,
+        );
 
         final raw = data["candles"] ?? [];
 
-        final list = raw.map<model.Candle>((c) {
+        final list = (raw as List).map<model.Candle>((c) {
           return model.Candle(
             epoch: c["epoch"],
             open: (c["open"] ?? 0).toDouble(),
@@ -100,13 +115,16 @@ class DerivService {
 
         _data.putIfAbsent(symbol, () => {});
         _data[symbol]![tf] = list;
+
         break;
     }
   }
 
   // ================= SEND =================
   void _send(Map<String, dynamic> data) {
-    _channel?.sink.add(jsonEncode(data));
+    try {
+      _channel?.sink.add(jsonEncode(data));
+    } catch (_) {}
   }
 
   Future<void> ensureReady() async {
@@ -115,19 +133,26 @@ class DerivService {
   }
 
   // ================= SUBSCRIBE =================
-  Future<void> subscribeCandles(String symbolRaw, {TF tf = TF.h1}) async {
+  Future<void> subscribeCandles(
+    String symbolRaw, {
+    TF tf = TF.h1,
+  }) async {
+    await ensureReady();
+
     final symbol = normalizeSymbol(symbolRaw);
     final key = "$symbol-${tf.name}";
 
     if (_subscribed.contains(key)) return;
+
     _subscribed.add(key);
 
     _send({
       "ticks_history": symbol,
       "style": "candles",
       "granularity": _tfToSec(tf),
-      "count": 1000000,
-      "end": "latest"
+      "count": tf == TF.w1 ? 520 : 5000,
+      "end": "latest",
+      "subscribe": 1
     });
   }
 
@@ -141,7 +166,16 @@ class DerivService {
   // ================= GET CANDLES =================
   List<model.Candle> getCandles(String symbolRaw, TF tf) {
     final symbol = normalizeSymbol(symbolRaw);
-    return _data[symbol]?[tf] ?? [];
+
+    final list = _data[symbol]?[tf] ?? [];
+
+    // 🔥 FIX W1 DERIVATION (IMPORTANT)
+    if (tf == TF.w1 && list.isEmpty) {
+      final d1 = _data[symbol]?[TF.d1] ?? [];
+      return _buildWeeklyFromDaily(d1);
+    }
+
+    return list;
   }
 
   // ================= FETCH =================
@@ -152,50 +186,49 @@ class DerivService {
     final symbol = normalizeSymbol(symbolRaw);
 
     final c = Completer<List<model.Candle>>();
-
     late StreamSubscription sub;
 
     sub = stream.listen((data) {
-      if (data["msg_type"] == "candles") {
-        final echo = data["echo_req"] ?? {};
-        final sym = normalizeSymbol(echo["ticks_history"] ?? "");
+      if (data["msg_type"] != "candles") return;
 
-        if (sym != symbol) return;
+      final echo = data["echo_req"] ?? {};
+      final sym = normalizeSymbol(echo["ticks_history"] ?? "");
 
-        final raw = data["candles"] ?? [];
+      if (sym != symbol) return;
 
-        final list = raw.map<model.Candle>((c) {
-          return model.Candle(
-            epoch: c["epoch"],
-            open: (c["open"] ?? 0).toDouble(),
-            high: (c["high"] ?? 0).toDouble(),
-            low: (c["low"] ?? 0).toDouble(),
-            close: (c["close"] ?? 0).toDouble(),
-            volume: (c["volume"] ?? 0).toDouble(),
-          );
-        }).toList();
+      final raw = data["candles"] ?? [];
 
-        c.complete(list);
-        sub.cancel();
-      }
+      final list = (raw as List).map<model.Candle>((c) {
+        return model.Candle(
+          epoch: c["epoch"],
+          open: (c["open"] ?? 0).toDouble(),
+          high: (c["high"] ?? 0).toDouble(),
+          low: (c["low"] ?? 0).toDouble(),
+          close: (c["close"] ?? 0).toDouble(),
+          volume: (c["volume"] ?? 0).toDouble(),
+        );
+      }).toList();
+
+      if (!c.isCompleted) c.complete(list);
+      sub.cancel();
     });
 
     _send({
       "ticks_history": symbol,
       "style": "candles",
       "granularity": _tfToSec(tf),
-      "count": 1000000
+      "count": tf == TF.w1 ? 520 : 5000,
+      "end": "latest"
     });
 
     return c.future;
   }
 
-  // ================= MARKET PAIRS (FIXED) =================
+  // ================= MARKET PAIRS =================
   Future<List<String>> getMarketPairs() async {
     _send({"active_symbols": "brief"});
 
     final c = Completer<List<String>>();
-
     late StreamSubscription sub;
 
     sub = stream.listen((e) {
@@ -209,7 +242,7 @@ class DerivService {
     return c.future;
   }
 
-  // ================= TRADE (FIXED) =================
+  // ================= TRADE =================
   Future<String?> placeTrade(
     String pair,
     bool isBuy, {
@@ -237,7 +270,7 @@ class DerivService {
     return buy["buy"]?["contract_id"]?.toString();
   }
 
-  // ================= LAST PRICE (FIXED) =================
+  // ================= LAST PRICE =================
   Future<double> getLastPrice(String symbol) async {
     final candles = await fetchCandles(symbol, TF.m1);
     return candles.isNotEmpty ? candles.last.close : 0;
@@ -267,7 +300,6 @@ class DerivService {
     Map<String, dynamic> data,
   ) async {
     final c = Completer<Map<String, dynamic>>();
-
     late StreamSubscription sub;
 
     sub = stream.listen((e) {
@@ -284,42 +316,48 @@ class DerivService {
   Future<void> _reconnect() async {
     _connected = false;
     _auth = false;
+
     await Future.delayed(const Duration(seconds: 3));
+
     await connect(_token);
-  }
-// ================= BALANCE =================
-Future<double> getBalance() async {
-  _send({"balance": 1});
 
-  final c = Completer<double>();
+    final old = List<String>.from(_subscribed);
+    _subscribed.clear();
 
-  late StreamSubscription sub;
+    for (final key in old) {
+      final parts = key.split("-");
+      final symbol = parts[0];
 
-  sub = stream.listen((e) {
-    if (e["msg_type"] == "balance") {
-      final b = e["balance"];
-      final value =
-          double.tryParse(b?["balance"]?.toString() ?? "0") ?? 0;
+      final tf = TF.values.firstWhere(
+        (e) => e.name == parts[1],
+        orElse: () => TF.h1,
+      );
 
-      c.complete(value);
-      sub.cancel();
+      await subscribeCandles(symbol, tf: tf);
     }
-  });
+  }
 
-  return c.future;
-}
+  // ================= BALANCE =================
+  Future<double> getBalance() async {
+    _send({"balance": 1});
 
-// ================= CANDLES WITH TF =================
-Future<List<model.Candle>> getCandlesWithTF(
-  String symbolRaw, {
-  TF timeframe = TF.h1,
-}) async {
-  await subscribeCandles(symbolRaw, tf: timeframe);
+    final c = Completer<double>();
+    late StreamSubscription sub;
 
-  await Future.delayed(const Duration(seconds: 2));
+    sub = stream.listen((e) {
+      if (e["msg_type"] == "balance") {
+        final b = e["balance"];
+        final value =
+            double.tryParse(b?["balance"]?.toString() ?? "0") ?? 0;
 
-  return getCandles(symbolRaw, timeframe);
-}
+        c.complete(value);
+        sub.cancel();
+      }
+    });
+
+    return c.future;
+  }
+
   // ================= TF =================
   int _tfToSec(TF tf) {
     switch (tf) {
@@ -351,7 +389,50 @@ Future<List<model.Candle>> getCandlesWithTF(
     }
   }
 
-  String normalizeSymbol(String raw) {
-    return raw.trim().toUpperCase();
+  String normalizeSymbol(String raw) => raw.trim().toUpperCase();
+Future<List<model.Candle>> getCandlesWithTF(
+  String symbolRaw, {
+  TF timeframe = TF.h1,
+}) async {
+  await ensureReady();
+
+  final symbol = normalizeSymbol(symbolRaw);
+
+  // subscribe first
+  await subscribeCandles(symbol, tf: timeframe);
+
+  // wait for data to arrive (safe delay)
+  int retries = 0;
+
+  while ((_data[symbol]?[timeframe] ?? []).isEmpty && retries < 10) {
+    await Future.delayed(const Duration(milliseconds: 500));
+    retries++;
+  }
+
+  return _data[symbol]?[timeframe] ?? [];
+}
+  // ================= WEEKLY BUILDER =================
+  List<model.Candle> _buildWeeklyFromDaily(
+    List<model.Candle> d1,
+  ) {
+    final result = <model.Candle>[];
+
+    for (int i = 0; i + 4 < d1.length; i += 5) {
+      final chunk = d1.sublist(i, i + 5);
+
+      result.add(model.Candle(
+        epoch: chunk.first.epoch,
+        open: chunk.first.open,
+        high: chunk.map((e) => e.high).reduce(max),
+        low: chunk.map((e) => e.low).reduce(min),
+        close: chunk.last.close,
+        volume: chunk.fold<double>(
+  0.0,
+  (a, b) => a + (b.volume ?? 0.0),
+),
+      ));
+    }
+
+    return result;
   }
 }

@@ -22,15 +22,7 @@ double DAILY_LOSS_LIMIT_PERCENT = 5;
 double DAY_START_BALANCE = 0;
 DateTime? LAST_RESET_DAY;
 
-/// ================= TRAILING STOP =================
-double TRAILING_TRIGGER_RR = 1.5;
-double TRAILING_STEP_RR = 0.5;
-
-/// ================= PARTIAL TP =================
-bool ENABLE_PARTIAL_TP = true;
-double PARTIAL_TP_RR = 1.0;
-
-/// ================= EQUITY PROTECTION =================
+/// ================= EQUITY =================
 double START_BALANCE = 0;
 double CURRENT_BALANCE = 0;
 double MAX_DRAWDOWN_PERCENT = 25;
@@ -39,7 +31,7 @@ int lossStreak = 0;
 
 bool KILL_SWITCH = false;
 
-/// ================= ACTIVE TRADE =================
+/// ================= TRADE MODEL =================
 class ActiveTrade {
   final String contractId;
   final String pair;
@@ -69,20 +61,7 @@ Future<Response> onRequest(RequestContext context) async {
     return Response.json(
       body: {
         "success": true,
-        "count": _activeTrades.length,
-        "trades": _activeTrades.values.map((t) {
-          return {
-            "contractId": t.contractId,
-            "pair": t.pair,
-            "buy": t.buy,
-            "entry": t.entry,
-            "sl": t.sl,
-            "tp": t.tp,
-            "current": t.current,
-            "breakeven": t.breakeven,
-            "closed": t.closed,
-          };
-        }).toList(),
+        "active_trades": _activeTrades.length,
       },
     );
   }
@@ -95,96 +74,47 @@ Future<Response> onRequest(RequestContext context) async {
   return Response(statusCode: 405);
 }
 
-/// ================= BALANCE =================
-Future<double> _getBalance() async {
-  final deriv = DerivService.instance;
-
-  if (!deriv.isConnected) {
-    await deriv.connect();
-  }
-
-  return deriv.getBalance();
-}
-
-/// ================= EQUITY CHECK =================
-void _checkEquityProtection() {
-  if (START_BALANCE == 0) return;
-
-  final drawdown =
-      ((START_BALANCE - CURRENT_BALANCE) / START_BALANCE) * 100;
-
-  if (drawdown >= MAX_DRAWDOWN_PERCENT) {
-    KILL_SWITCH = true;
-    AUTO_TRADING_ENABLED = false;
-    print("🚨 EQUITY DRAWDOWN HIT: $drawdown% BOT STOPPED");
-  }
-}
-
-void _checkDailyLimits() {
-  final now = DateTime.now();
-
-  if (LAST_RESET_DAY == null ||
-      LAST_RESET_DAY!.day != now.day ||
-      LAST_RESET_DAY!.month != now.month ||
-      LAST_RESET_DAY!.year != now.year) {
-    LAST_RESET_DAY = now;
-    DAY_START_BALANCE = CURRENT_BALANCE;
-  }
-
-  if (DAY_START_BALANCE <= 0) return;
-
-  final pnlPercent =
-      ((CURRENT_BALANCE - DAY_START_BALANCE) / DAY_START_BALANCE) * 100;
-
-  if (pnlPercent >= DAILY_PROFIT_TARGET_PERCENT) {
-    AUTO_TRADING_ENABLED = false;
-    KILL_SWITCH = true;
-    print("🎯 DAILY PROFIT TARGET REACHED: $pnlPercent%");
-  }
-
-  if (pnlPercent <= -DAILY_LOSS_LIMIT_PERCENT) {
-    AUTO_TRADING_ENABLED = false;
-    KILL_SWITCH = true;
-    print("🛑 DAILY LOSS LIMIT REACHED: $pnlPercent%");
-  }
-}
-
-/// ================= SIGNAL HANDLER =================
+/// ================= HANDLE SIGNAL =================
 Future<Response> _handleSignal(Map<String, dynamic> json) async {
   try {
     if (KILL_SWITCH || !AUTO_TRADING_ENABLED) {
-      return Response.json(body: {"status": "BOT DISABLED"});
+      return Response.json(body: {"status": "BOT_DISABLED"});
     }
 
     if (json['type'] != 'signal') {
       return Response.json(
         statusCode: 400,
-        body: {"error": "Invalid payload"},
+        body: {"error": "INVALID_PAYLOAD"},
       );
     }
 
-    final symbol = json['symbol']?.toString() ?? '';
+    final symbolRaw = json['symbol']?.toString() ?? '';
     final direction = json['direction']?.toString() ?? '';
     final confidence = (json['confidence'] as num?)?.toDouble() ?? 0.0;
     final timestamp = json['timestamp']?.toString() ?? '';
 
+    final symbol = symbolRaw.toUpperCase().trim();
     final signalId = "${symbol}_$timestamp";
 
-    print("\n========== TRADE CHECK ==========");
-    print("Incoming Signal → $symbol | $direction | CONF: $confidence");
+    print("\n══════════════════════════════");
+    print("📥 TRADE SIGNAL");
+    print("══════════════════════════════");
+    print("SYMBOL: $symbol");
+    print("DIRECTION: $direction");
+    print("CONFIDENCE: $confidence");
 
     if (_processedSignals.contains(signalId)) {
-      return Response.json(body: {"status": "duplicate ignored"});
+      return Response.json(body: {"status": "DUPLICATE"});
     }
     _processedSignals.add(signalId);
 
     if (confidence < MIN_CONFIDENCE) {
-      print("❌ REJECTED → Low confidence");
-      return Response.json(body: {"status": "low confidence rejected"});
+      print("❌ REJECTED → LOW CONFIDENCE");
+      return Response.json(body: {"status": "LOW_CONFIDENCE"});
     }
 
     if (_activeTrades.length >= MAX_TRADES) {
-      return Response.json(body: {"status": "max trades reached"});
+      return Response.json(body: {"status": "MAX_TRADES"});
     }
 
     CURRENT_BALANCE = await _getBalance();
@@ -194,74 +124,42 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
     }
 
     _checkEquityProtection();
+    _checkDailyLimits();
 
     if (KILL_SWITCH) {
-      return Response.json(body: {"status": "equity protection triggered"});
+      return Response.json(body: {"status": "KILL_SWITCH_ACTIVE"});
     }
 
-final normalizedSymbol = symbol.toUpperCase().trim();
+    /// ================= ANALYSIS LOOKUP =================
+    final service = MarketAnalysisService.instance;
 
-print("🔍 LOOKUP SYMBOL RAW: $symbol");
-print("🔍 LOOKUP SYMBOL NORMALIZED: $normalizedSymbol");
+    print("\n🧠 ANALYSIS LOOKUP");
+    print("CACHE KEYS: ${service.latestKeys}");
 
-print("\n🧠 ================= ANALYSIS TRACE START =================");
+    final analysis = service.latestFor(symbol);
 
-print("1️⃣ Incoming Symbol: $symbol");
-print("2️⃣ Normalized Symbol: $normalizedSymbol");
-
-final service = MarketAnalysisService.instance;
-
-print("3️⃣ Available Cache Keys:");
-print(service.latestKeys);
-
-final analysis = service.latestFor(normalizedSymbol);
-
-print("4️⃣ Lookup Result Exists: ${analysis != null}");
-
-if (analysis != null) {
-  print("5️⃣ IS VALID TRADE: ${analysis.isValidTrade}");
-  print("6️⃣ CAN BUY: ${analysis.canBuy}");
-  print("7️⃣ CAN SELL: ${analysis.canSell}");
-  print("8️⃣ INDICATORS:");
-  print(analysis.indicators);
-} else {
-  print("❌ 5️⃣ NO ANALYSIS FOUND FOR: $normalizedSymbol");
-}
-
-print("🧠 ================= ANALYSIS TRACE END =================\n");
-
-print("🔍 LOOKUP RESULT: ${analysis != null}");
-
-    print("\n========== ANALYSIS COMPARISON ==========");
-    print("Symbol: $symbol");
-    print("Analysis Found: ${analysis != null}");
-
-    if (analysis != null) {
-      print("Analysis.isValidTrade: ${analysis.isValidTrade}");
-      print("Confidence: ${analysis.indicators["confidence"]}");
-      print("RAW: ${analysis.indicators}");
-    }
+    print("FOUND ANALYSIS: ${analysis != null}");
 
     if (analysis == null) {
-  print("❌ REJECTED → No analysis data");
-
-  print("📦 CACHE KEYS:");
-  print(MarketAnalysisService.instance.latestKeys);
-
-  return Response.json(
-    body: {"status": "market rejected", "reason": "no_analysis"},
-  );
-}
-
-    if (!analysis.isValidTrade) {
-      print("❌ REJECTED → Invalid analysis signal");
+      print("❌ NO ANALYSIS FOUND");
       return Response.json(
-        body: {"status": "market rejected", "reason": "invalid_analysis"},
+        body: {"status": "REJECTED", "reason": "NO_ANALYSIS"},
       );
     }
 
-    print("✅ APPROVED → Analysis passed filter");
+    print("CAN BUY: ${analysis.canBuy}");
+    print("CAN SELL: ${analysis.canSell}");
 
+    if (!analysis.isValidTrade) {
+      print("❌ INVALID ANALYSIS");
+      return Response.json(
+        body: {"status": "REJECTED", "reason": "INVALID_ANALYSIS"},
+      );
+    }
+
+    print("✅ ANALYSIS PASSED");
+
+    /// ================= TRADE EXECUTION =================
     final deriv = DerivService.instance;
 
     final entry = (json['entry'] as num).toDouble();
@@ -271,11 +169,11 @@ print("🔍 LOOKUP RESULT: ${analysis != null}");
     final isBuy = direction.toUpperCase() == "BUY";
     final stake = _calculateStake(confidence, CURRENT_BALANCE);
 
-    print("\n========== EXECUTING TRADE ==========");
-    print("Pair: $symbol");
-    print("Direction: $direction");
-    print("Entry: $entry SL: $sl TP: $tp");
-    print("Stake: $stake");
+    print("\n🚀 EXECUTING TRADE");
+    print("PAIR: $symbol");
+    print("TYPE: ${isBuy ? "BUY" : "SELL"}");
+    print("ENTRY: $entry SL: $sl TP: $tp");
+    print("STAKE: $stake");
 
     final contractId = await deriv.placeTrade(
       symbol,
@@ -287,11 +185,11 @@ print("🔍 LOOKUP RESULT: ${analysis != null}");
       print("❌ TRADE FAILED");
       return Response.json(
         statusCode: 500,
-        body: {"error": "trade failed"},
+        body: {"error": "TRADE_FAILED"},
       );
     }
 
-    print("🚀 TRADE EXECUTED → $contractId");
+    print("🔥 TRADE EXECUTED → $contractId");
 
     final trade = ActiveTrade(
       contractId: contractId,
@@ -310,7 +208,6 @@ print("🔍 LOOKUP RESULT: ${analysis != null}");
       "status": "EXECUTED",
       "contractId": contractId,
       "symbol": symbol,
-      "direction": direction,
       "balance": CURRENT_BALANCE,
     });
 
@@ -320,6 +217,60 @@ print("🔍 LOOKUP RESULT: ${analysis != null}");
       statusCode: 500,
       body: {"error": "$e"},
     );
+  }
+}
+
+/// ================= BALANCE =================
+Future<double> _getBalance() async {
+  final deriv = DerivService.instance;
+
+  if (!deriv.isConnected) {
+    await deriv.connect();
+  }
+
+  return deriv.getBalance();
+}
+
+/// ================= EQUITY PROTECTION =================
+void _checkEquityProtection() {
+  if (START_BALANCE == 0) return;
+
+  final drawdown =
+      ((START_BALANCE - CURRENT_BALANCE) / START_BALANCE) * 100;
+
+  if (drawdown >= MAX_DRAWDOWN_PERCENT) {
+    KILL_SWITCH = true;
+    AUTO_TRADING_ENABLED = false;
+    print("🚨 DRAWDOWN HIT → BOT STOPPED ($drawdown%)");
+  }
+}
+
+void _checkDailyLimits() {
+  final now = DateTime.now();
+
+  if (LAST_RESET_DAY == null ||
+      LAST_RESET_DAY!.day != now.day ||
+      LAST_RESET_DAY!.month != now.month ||
+      LAST_RESET_DAY!.year != now.year) {
+    LAST_RESET_DAY = now;
+    DAY_START_BALANCE = CURRENT_BALANCE;
+  }
+
+  if (DAY_START_BALANCE <= 0) return;
+
+  final pnl =
+      ((CURRENT_BALANCE - DAY_START_BALANCE) / DAY_START_BALANCE) * 100;
+
+  if (pnl >= DAILY_PROFIT_TARGET_PERCENT) {
+    AUTO_TRADING_ENABLED = false;
+    KILL_SWITCH = true;
+    print("🎯 DAILY TARGET HIT → $pnl%");
+  }
+
+  if (pnl <= -DAILY_LOSS_LIMIT_PERCENT) {
+    AUTO_TRADING_ENABLED = false;
+    KILL_SWITCH = true;
+    print("🛑 DAILY LOSS HIT → $pnl%");
   }
 }
 
@@ -349,7 +300,7 @@ void _subscribeToTrade(ActiveTrade trade) {
       final risk = (trade.entry - trade.sl).abs();
       if (risk == 0) return;
 
-      double rr = trade.buy
+      final rr = trade.buy
           ? (price - trade.entry) / risk
           : (trade.entry - price) / risk;
 
@@ -390,7 +341,7 @@ Future<void> _closeTrade(ActiveTrade trade, {required String reason}) async {
   _checkDailyLimits();
 
   print("\n========== TRADE CLOSED ==========");
-  print("Contract: ${trade.contractId}");
-  print("Reason: $reason");
-  print("Balance: $CURRENT_BALANCE");
+  print("CONTRACT: ${trade.contractId}");
+  print("REASON: $reason");
+  print("BALANCE: $CURRENT_BALANCE");
 }
