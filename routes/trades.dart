@@ -106,7 +106,7 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
     final confidence = (json['confidence'] as num?)?.toDouble() ?? 0.0;
     final timestamp = json['timestamp']?.toString() ?? '';
 
-    final symbol = symbolRaw.toUpperCase().trim();
+    final symbol = _normalizeSymbol(symbolRaw);
     final safeTimestamp = timestamp.isNotEmpty
     ? timestamp
     : DateTime.now().millisecondsSinceEpoch.toString();
@@ -377,6 +377,20 @@ Future<void> _closeTrade(ActiveTrade trade, {required String reason}) async {
   print("CONTRACT: ${trade.contractId}");
   print("REASON: $reason");
   print("BALANCE: $CURRENT_BALANCE");
+}
+String _normalizeSymbol(String symbol) {
+  final s = symbol.toUpperCase().trim();
+
+  if (s.startsWith("FRX")) {
+    return s; // forex direct
+  }
+
+  if (s.startsWith("OTC_")) return s;
+  if (s.startsWith("BOOM")) return s;
+  if (s.startsWith("CRASH")) return s;
+  if (s.startsWith("JD")) return s;
+
+  return s;
 }
 /// ================= STAKE =================
 double _calculateStake(double confidence, double balance) {
