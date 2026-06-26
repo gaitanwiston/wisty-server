@@ -86,33 +86,36 @@ class MarketAnalysisService {
     _log("🚀 SERVER2 STARTED (MIRROR MODE)");
 
     for (final p in pairs) {
-      await deriv.subscribe(p);
-      _isRunning[p] = false;
+      final symbol = _normalize(p);
+
+      await deriv.subscribe(symbol);
+      _isRunning[symbol] = false;
     }
 
     deriv.stream.listen((event) {
       final type = event["msg_type"];
       final echo = event["echo_req"] ?? {};
-      final symbol = echo["ticks_history"];
+      final symbolRaw = echo["ticks_history"];
 
-      if (symbol == null) return;
+      if (symbolRaw == null) return;
+
+      final symbol = _normalize(symbolRaw);
 
       final now = DateTime.now();
-      final key = _normalize(symbol);
 
-      // 🔥 GLOBAL EVENT THROTTLE (VERY IMPORTANT)
-      if (_lastEvent[key] != null &&
-          now.difference(_lastEvent[key]!).inMilliseconds < 1500) {
+      if (_lastEvent[symbol] != null &&
+          now.difference(_lastEvent[symbol]!).inMilliseconds < 1500) {
         return;
       }
-      _lastEvent[key] = now;
 
-      _log("📩 EVENT → $type | $key");
+      _lastEvent[symbol] = now;
+
+      _log("📩 EVENT → $type | $symbol");
 
       if (type == "candles" ||
           type == "candles_update" ||
           type == "ohlc") {
-        _run(key);
+        _run(symbol);
       }
     });
   }
@@ -145,7 +148,6 @@ class MarketAnalysisService {
 
       if (h1.length < 120) {
         _log("⚠️ SKIP $pair → insufficient data");
-        _isRunning[pair] = false;
         return;
       }
 
@@ -156,6 +158,7 @@ class MarketAnalysisService {
 
       _log("✅ CACHE UPDATED → $pair");
       _log("➡️ BUY:${result.canBuy} SELL:${result.canSell}");
+
     } catch (e, st) {
       _log("❌ ERROR $pair → $e");
       _log("$st");
@@ -235,13 +238,12 @@ class MarketAnalysisService {
 
     final strongTrend = confidence >= 65;
     final clearEdge = dominance >= 25;
-    final structureOk = trendAligned;
 
     bool isBuy =
-        strongTrend && clearEdge && structureOk && buy > sell;
+        strongTrend && clearEdge && trendAligned && buy > sell;
 
     bool isSell =
-        strongTrend && clearEdge && structureOk && sell > buy;
+        strongTrend && clearEdge && trendAligned && sell > buy;
 
     _log("📊 BUY:$buy SELL:$sell CONF:$confidence");
 
@@ -365,44 +367,6 @@ class MarketAnalysisService {
     }
 
     return sum / len;
-  }
-
-  MarketAnalysisResult _fallback(String pair) {
-    return MarketAnalysisResult(
-      symbol: pair,
-      candles: const [],
-      candlesH1: const [],
-      candlesM15: const [],
-      candlesM30: const [],
-      candlesM5: const [],
-      canBuy: false,
-      canSell: false,
-      structureValid: false,
-      emaValid: false,
-      rsiValid: false,
-      confirmationValid: false,
-      filtersValid: false,
-      ema50: const [],
-      ema200: const [],
-      indicators: const {},
-      entryCandles: const [],
-      structurePoints: const [],
-      conditionsMet: const [],
-      reasonsFailed: const ["fallback"],
-      stopLoss: 0,
-      takeProfit: 0,
-      structureBuy: false,
-      structureSell: false,
-      biasIsBuy: false,
-      isValidTrade: false,
-      risk: RiskModel(
-        entry: 0,
-        stopLoss: 0,
-        takeProfit: 0,
-        lotSize: 0,
-        direction: "NONE",
-      ),
-    );
   }
 
   MarketAnalysisResult? latestFor(String pair) => _latest[pair];
