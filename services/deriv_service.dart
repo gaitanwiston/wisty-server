@@ -44,6 +44,8 @@ class DerivService {
     _channel = WebSocketChannel.connect(uri);
     _connected = true;
 
+    _sub?.cancel();
+
     _sub = _channel!.stream.listen(
       (msg) {
         try {
@@ -98,9 +100,11 @@ class DerivService {
     final gran = echo["granularity"] ?? 60;
     final tf = _mapTF(gran);
 
-    final parsed = candles.map<model.Candle>((c) {
+    final parsed = candles
+        .where((c) => c is Map)
+        .map<model.Candle>((c) {
       return model.Candle(
-        epoch: c["epoch"],
+        epoch: c["epoch"] ?? 0,
         open: (c["open"] ?? 0).toDouble(),
         high: (c["high"] ?? 0).toDouble(),
         low: (c["low"] ?? 0).toDouble(),
@@ -135,7 +139,7 @@ class DerivService {
       "ticks_history": symbol,
       "style": "candles",
       "granularity": _tfToSec(tf),
-      "count": 5000,
+      "count": 500,
       "end": "latest",
       "subscribe": 1
     });
@@ -148,18 +152,18 @@ class DerivService {
   }
 
   Future<List<model.Candle>> getCandlesWithTF(
-      String symbolRaw, {
-      TF timeframe = TF.h1,
+    String symbolRaw, {
+    TF timeframe = TF.h1,
   }) async {
     await ensureReady();
     await subscribeCandles(symbolRaw, tf: timeframe);
 
-    await Future.delayed(const Duration(milliseconds: 800));
+    await Future.delayed(const Duration(milliseconds: 600));
 
     return getCandles(symbolRaw, timeframe);
   }
 
-  // ================= MARKET PAIRS =================
+  // ================= MARKET PAIRS (FIXED) =================
   Future<List<String>> getMarketPairs() async {
     await ensureReady();
 
@@ -168,8 +172,21 @@ class DerivService {
     late StreamSubscription sub;
     sub = stream.listen((e) {
       if (e["msg_type"] == "active_symbols") {
-        final list = e["active_symbols"] as List;
-        c.complete(list.map((x) => x["symbol"].toString()).toList());
+        final list = e["active_symbols"];
+
+        if (list is! List) {
+          c.complete([]);
+          sub.cancel();
+          return;
+        }
+
+        c.complete(
+          list
+              .whereType<Map>()
+              .map((x) => x["symbol"].toString())
+              .toList(),
+        );
+
         sub.cancel();
       }
     });
@@ -179,7 +196,7 @@ class DerivService {
     return c.future;
   }
 
-  // ================= BALANCE =================
+  // ================= BALANCE (FIXED) =================
   Future<double> getBalance() async {
     await ensureReady();
 
@@ -189,7 +206,15 @@ class DerivService {
     sub = stream.listen((e) {
       if (e["msg_type"] == "balance") {
         final b = e["balance"];
-        c.complete(double.parse(b["balance"].toString()));
+
+        if (b is! Map) {
+          c.complete(0);
+          sub.cancel();
+          return;
+        }
+
+        c.complete(double.tryParse(b["balance"].toString()) ?? 0);
+
         sub.cancel();
       }
     });
@@ -207,7 +232,10 @@ class DerivService {
 
   // ================= TRADE =================
   Future<String?> placeTrade(
-      String symbol, bool isBuy, {double stake = 10}) async {
+    String symbol,
+    bool isBuy, {
+    double stake = 10,
+  }) async {
     await ensureReady();
 
     final proposal = await _sendAndWait("proposal", {
@@ -220,7 +248,7 @@ class DerivService {
     });
 
     final p = proposal["proposal"];
-    if (p == null) return null;
+    if (p is! Map) return null;
 
     final buy = await _sendAndWait("buy", {
       "buy": p["id"],
@@ -230,8 +258,11 @@ class DerivService {
     return buy["buy"]?["contract_id"]?.toString();
   }
 
+  // ================= SAFE REQUEST =================
   Future<Map<String, dynamic>> _sendAndWait(
-      String type, Map<String, dynamic> data) async {
+    String type,
+    Map<String, dynamic> data,
+  ) async {
     final c = Completer<Map<String, dynamic>>();
 
     late StreamSubscription sub;
@@ -243,12 +274,15 @@ class DerivService {
     });
 
     _send(data);
+
     return c.future;
   }
 
   // ================= CONTRACT =================
   StreamSubscription subscribeContract(
-      String id, Function(Map<String, dynamic>) onUpdate) {
+    String id,
+    Function(Map<String, dynamic>) onUpdate,
+  ) {
     return stream.listen((e) {
       if (e["contract_id"]?.toString() == id) {
         onUpdate(e);
