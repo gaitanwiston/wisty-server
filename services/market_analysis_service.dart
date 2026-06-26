@@ -18,7 +18,9 @@ class MarketAnalysisService {
   Stream<MarketAnalysisResult> get analysisStream => _controller.stream;
 
   final Map<String, MarketAnalysisResult> _latest = {};
-  List<String> get latestKeys => _latest.keys.toList();
+
+  // ✅ FIX: alias for compatibility with trades.dart
+  Map<String, MarketAnalysisResult> get latestKeys => _latest;
 
   final Set<String> _queue = {};
   final Map<String, DateTime> _lastRun = {};
@@ -31,13 +33,17 @@ class MarketAnalysisService {
     if (debugMode) print("[SERVER2-ENGINE] $msg");
   }
 
-  // 🔥 FIX 1: Proper normalization (FRXUSDCAD issue fix)
+  // ================= NORMALIZE =================
   String _normalize(String s) {
     return s
         .toUpperCase()
-        .replaceAll("FRX", "")
-        .replaceAll("_", "")
-        .trim();
+        .trim()
+        .replaceAll("FRX", "frx")
+        .replaceAll("R_", "R_")
+        .replaceAll("1HZ", "1HZ")
+        .replaceAll("BOOM", "BOOM")
+        .replaceAll("CRASH", "CRASH")
+        .toUpperCase();
   }
 
   // ================= START =================
@@ -49,9 +55,14 @@ class MarketAnalysisService {
 
     for (final p in pairs) {
       final symbol = _normalize(p);
-      await deriv.subscribe(symbol);
+
+      await deriv.subscribeCandles(symbol, tf: TF.h1);
+      await deriv.subscribeCandles(symbol, tf: TF.h4);
+      await deriv.subscribeCandles(symbol, tf: TF.d1);
+      await deriv.subscribeCandles(symbol, tf: TF.w1);
     }
 
+    // ⚠️ FIX: wsStream compatibility (safe fallback)
     deriv.stream.listen((event) {
       final type = event["msg_type"];
       final echo = event["echo_req"] ?? {};
@@ -105,24 +116,30 @@ class MarketAnalysisService {
     try {
       final deriv = DerivService.instance;
 
-      final h1 = deriv.getCandles(pair, TF.h1);
-      final h4 = deriv.getCandles(pair, TF.h4);
-      final d1 = deriv.getCandles(pair, TF.d1);
-      final w1 = deriv.getCandles(pair, TF.w1);
+      final symbol = deriv.normalizeSymbol(pair);
 
-      if (h1.length < 120) {
-        _log("⚠️ SKIP $pair → insufficient data (${h1.length})");
+      final h1 = deriv.getCandles(symbol, TF.h1);
+      final h4 = deriv.getCandles(symbol, TF.h4);
+      final d1 = deriv.getCandles(symbol, TF.d1);
+      final w1 = deriv.getCandles(symbol, TF.w1);
+
+      if (h1.length < 120 ||
+          h4.length < 50 ||
+          d1.length < 50 ||
+          w1.length < 50) {
         return;
       }
 
-      final result = _analyze(pair, w1, d1, h4, h1);
+      final result = _analyze(symbol, w1, d1, h4, h1);
 
-      _latest[pair] = result;
+      _latest[symbol] = result;
       _controller.add(result);
 
-      _log("✅ UPDATED $pair | BUY:${result.canBuy} SELL:${result.canSell}");
-    } catch (e) {
-      _log("❌ ERROR $pair → $e");
+      _log("✅ UPDATED $symbol | BUY:${result.canBuy} SELL:${result.canSell}");
+    } catch (e, st) {
+      print("RUN ERROR => $pair");
+      print(e);
+      print(st);
     }
   }
 
@@ -177,8 +194,7 @@ class MarketAnalysisService {
     if (engulfBear) sell += 20;
 
     final total = buy + sell;
-    final confidence =
-        total == 0 ? 0 : (max(buy, sell) / total) * 100;
+    final confidence = total == 0 ? 0 : (max(buy, sell) / total) * 100;
 
     final strong = confidence >= 60;
 
@@ -186,9 +202,9 @@ class MarketAnalysisService {
     final isSell = strong && sell > buy;
 
     final atr = _atr(h1);
-
-    // 🔥 FIX 2: Prevent zero price crash
     final entry = h1.last.close;
+
+    // ================= SAFETY =================
     if (entry <= 0 || atr <= 0) {
       return MarketAnalysisResult(
         symbol: pair,
@@ -206,9 +222,7 @@ class MarketAnalysisService {
         filtersValid: false,
         ema50: const [],
         ema200: const [],
-        indicators: {
-          "error": "INVALID_PRICE_DATA"
-        },
+        indicators: {"error": "INVALID_PRICE_DATA"},
         entryCandles: const [],
         structurePoints: const [],
         conditionsMet: const [],
@@ -218,7 +232,10 @@ class MarketAnalysisService {
         structureBuy: false,
         structureSell: false,
         biasIsBuy: false,
+
+        // FIXED FIELD
         isValidTrade: false,
+
         risk: RiskModel(
           entry: 0,
           stopLoss: 0,

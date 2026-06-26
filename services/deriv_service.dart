@@ -10,22 +10,17 @@ const String derivToken =
 
 const int derivAppId = 1089;
 
-enum TF { m1, h1, h4, d1, w1 }
+enum TF { m1, h1, h4, d1, w1, mn }
 
 class DerivService {
   static final DerivService instance = DerivService._internal();
   DerivService._internal();
-
-  factory DerivService() => instance;
 
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
 
   bool _connected = false;
   bool _auth = false;
-  bool _connecting = false;
-
-  String? _token;
 
   final StreamController<Map<String, dynamic>> _stream =
       StreamController.broadcast();
@@ -34,24 +29,20 @@ class DerivService {
 
   final Map<String, Map<TF, List<model.Candle>>> _data = {};
   final Set<String> _subscribed = {};
-  final Map<String, StreamController<Map<String, dynamic>>> _contracts = {};
-  final Map<String, double> _balanceCache = {};
-
-  bool get isConnected => _connected && _auth;
 
   Timer? _keepAlive;
 
+  bool get isConnected => _connected && _auth;
+
   // ================= CONNECT =================
   Future<void> connect([String? token]) async {
-    if (_connected || _connecting) return;
+    if (_connected) return;
 
-    _connecting = true;
-    _token = token ?? derivToken;
-
-    final uri = Uri.parse(
-        "wss://ws.derivws.com/websockets/v3?app_id=$derivAppId");
+    final uri =
+        Uri.parse("wss://ws.derivws.com/websockets/v3?app_id=$derivAppId");
 
     _channel = WebSocketChannel.connect(uri);
+    _connected = true;
 
     _sub = _channel!.stream.listen(
       (msg) {
@@ -64,19 +55,15 @@ class DerivService {
           }
         } catch (_) {}
       },
-      onError: (_) => _reconnect(),
       onDone: _reconnect,
+      onError: (_) => _reconnect(),
       cancelOnError: true,
     );
 
-    _connected = true;
-    _auth = false;
-
-    _send({"authorize": _token});
+    _send({"authorize": token ?? derivToken});
+    _send({"active_symbols": "brief"});
 
     _startKeepAlive();
-
-    _connecting = false;
   }
 
   // ================= KEEP ALIVE =================
@@ -87,177 +74,141 @@ class DerivService {
     });
   }
 
-  // ================= HANDLE =================
-  void _handle(Map<String, dynamic> data) {
-    switch (data["msg_type"]) {
-      case "authorize":
-        _auth = true;
-        break;
-
-      case "balance":
-        final b = data["balance"];
-        if (b != null) {
-          _balanceCache["main"] =
-              double.tryParse(b["balance"].toString()) ?? 0;
-        }
-        break;
-
-      case "candles":
-        final echo = data["echo_req"] ?? {};
-        final symbol = normalizeSymbol(echo["ticks_history"] ?? "");
-        final tf = _mapTF(echo["granularity"] ?? 60);
-
-        final raw = data["candles"] ?? [];
-
-        final list = (raw as List).map<model.Candle>((c) {
-          return model.Candle(
-            epoch: c["epoch"],
-            open: (c["open"] ?? 0).toDouble(),
-            high: (c["high"] ?? 0).toDouble(),
-            low: (c["low"] ?? 0).toDouble(),
-            close: (c["close"] ?? 0).toDouble(),
-            volume: (c["volume"] ?? 0).toDouble(),
-          );
-        }).toList();
-
-        _data.putIfAbsent(symbol, () => {});
-        _data[symbol]![tf] = list;
-
-        // 🔥 FIX: ensure higher TF build (from Deriv1 logic)
-        _buildFallback(symbol);
-
-        break;
-    }
-  }
-
-  // ================= SEND =================
-  void _send(Map<String, dynamic> data) {
-    try {
-      _channel?.sink.add(jsonEncode(data));
-    } catch (_) {}
-  }
-
+  // ================= ENSURE READY =================
   Future<void> ensureReady() async {
     if (isConnected) return;
     await connect();
   }
 
+  // ================= HANDLE =================
+  void _handle(Map<String, dynamic> data) {
+    final type = data["msg_type"];
+
+    if (type == "authorize") {
+      _auth = true;
+    }
+
+    final candles = data["candles"];
+    if (candles is! List) return;
+
+    final echo = data["echo_req"] ?? {};
+    final symbol = normalizeSymbol(echo["ticks_history"] ?? "");
+    if (symbol.isEmpty) return;
+
+    final gran = echo["granularity"] ?? 60;
+    final tf = _mapTF(gran);
+
+    final parsed = candles.map<model.Candle>((c) {
+      return model.Candle(
+        epoch: c["epoch"],
+        open: (c["open"] ?? 0).toDouble(),
+        high: (c["high"] ?? 0).toDouble(),
+        low: (c["low"] ?? 0).toDouble(),
+        close: (c["close"] ?? 0).toDouble(),
+        volume: (c["volume"] ?? 0).toDouble(),
+      );
+    }).toList();
+
+    _data.putIfAbsent(symbol, () => {});
+    _data[symbol]![tf] = parsed;
+  }
+
   // ================= SUBSCRIBE =================
-  Future<void> subscribeCandles(
-    String symbolRaw, {
-    TF tf = TF.h1,
-  }) async {
+  Future<void> subscribe(String symbolRaw) async {
     await ensureReady();
 
     final symbol = normalizeSymbol(symbolRaw);
-    final key = "$symbol-${tf.name}";
 
-    if (_subscribed.contains(key)) return;
+    if (_subscribed.contains(symbol)) return;
+    _subscribed.add(symbol);
 
-    _subscribed.add(key);
-
-    _send({
-      "ticks_history": symbol,
-      "style": "candles",
-      "granularity": _tfToSec(tf),
-      "count": tf == TF.w1 ? 520 : 5000,
-      "end": "latest",
-      "subscribe": 1
-    });
-  }
-
-  Future<void> subscribe(String symbol) async {
     await subscribeCandles(symbol, tf: TF.h1);
     await subscribeCandles(symbol, tf: TF.h4);
     await subscribeCandles(symbol, tf: TF.d1);
     await subscribeCandles(symbol, tf: TF.w1);
   }
 
-  // ================= GET CANDLES =================
-  List<model.Candle> getCandles(String symbolRaw, TF tf) {
+  Future<void> subscribeCandles(String symbolRaw, {TF tf = TF.h1}) async {
     final symbol = normalizeSymbol(symbolRaw);
-
-    final list = _data[symbol]?[tf] ?? [];
-
-    if (tf == TF.w1 && list.isEmpty) {
-      final d1 = _data[symbol]?[TF.d1] ?? [];
-      return _buildWeeklyFromDaily(d1);
-    }
-
-    return list;
-  }
-
-  // ================= FETCH =================
-  Future<List<model.Candle>> fetchCandles(
-    String symbolRaw,
-    TF tf,
-  ) async {
-    final symbol = normalizeSymbol(symbolRaw);
-
-    final c = Completer<List<model.Candle>>();
-    late StreamSubscription sub;
-
-    sub = stream.listen((data) {
-      if (data["msg_type"] != "candles") return;
-
-      final echo = data["echo_req"] ?? {};
-      final sym = normalizeSymbol(echo["ticks_history"] ?? "");
-
-      if (sym != symbol) return;
-
-      final raw = data["candles"] ?? [];
-
-      final list = (raw as List).map<model.Candle>((c) {
-        return model.Candle(
-          epoch: c["epoch"],
-          open: (c["open"] ?? 0).toDouble(),
-          high: (c["high"] ?? 0).toDouble(),
-          low: (c["low"] ?? 0).toDouble(),
-          close: (c["close"] ?? 0).toDouble(),
-          volume: (c["volume"] ?? 0).toDouble(),
-        );
-      }).toList();
-
-      if (!c.isCompleted) c.complete(list);
-      sub.cancel();
-    });
 
     _send({
       "ticks_history": symbol,
       "style": "candles",
       "granularity": _tfToSec(tf),
-      "count": tf == TF.w1 ? 520 : 5000,
-      "end": "latest"
+      "count": 5000,
+      "end": "latest",
+      "subscribe": 1
     });
+  }
 
-    return c.future;
+  // ================= GET CANDLES =================
+  List<model.Candle> getCandles(String symbolRaw, TF tf) {
+    final symbol = normalizeSymbol(symbolRaw);
+    return _data[symbol]?[tf] ?? [];
+  }
+
+  Future<List<model.Candle>> getCandlesWithTF(
+      String symbolRaw, {
+      TF timeframe = TF.h1,
+  }) async {
+    await ensureReady();
+    await subscribeCandles(symbolRaw, tf: timeframe);
+
+    await Future.delayed(const Duration(milliseconds: 800));
+
+    return getCandles(symbolRaw, timeframe);
   }
 
   // ================= MARKET PAIRS =================
   Future<List<String>> getMarketPairs() async {
-    _send({"active_symbols": "brief"});
+    await ensureReady();
 
     final c = Completer<List<String>>();
-    late StreamSubscription sub;
 
+    late StreamSubscription sub;
     sub = stream.listen((e) {
       if (e["msg_type"] == "active_symbols") {
-        final list = e["active_symbols"] as List? ?? [];
+        final list = e["active_symbols"] as List;
         c.complete(list.map((x) => x["symbol"].toString()).toList());
         sub.cancel();
       }
     });
 
+    _send({"active_symbols": "brief"});
+
     return c.future;
+  }
+
+  // ================= BALANCE =================
+  Future<double> getBalance() async {
+    await ensureReady();
+
+    final c = Completer<double>();
+
+    late StreamSubscription sub;
+    sub = stream.listen((e) {
+      if (e["msg_type"] == "balance") {
+        final b = e["balance"];
+        c.complete(double.parse(b["balance"].toString()));
+        sub.cancel();
+      }
+    });
+
+    _send({"balance": 1});
+
+    return c.future;
+  }
+
+  // ================= LAST PRICE =================
+  Future<double> getLastPrice(String symbol) async {
+    final candles = await getCandlesWithTF(symbol, timeframe: TF.m1);
+    return candles.isEmpty ? 0 : candles.last.close;
   }
 
   // ================= TRADE =================
   Future<String?> placeTrade(
-    String pair,
-    bool isBuy, {
-    double stake = 10,
-  }) async {
-    final symbol = normalizeSymbol(pair);
+      String symbol, bool isBuy, {double stake = 10}) async {
+    await ensureReady();
 
     final proposal = await _sendAndWait("proposal", {
       "proposal": 1,
@@ -265,7 +216,7 @@ class DerivService {
       "basis": "stake",
       "contract_type": isBuy ? "CALL" : "PUT",
       "currency": "USD",
-      "symbol": symbol,
+      "symbol": normalizeSymbol(symbol),
     });
 
     final p = proposal["proposal"];
@@ -279,40 +230,13 @@ class DerivService {
     return buy["buy"]?["contract_id"]?.toString();
   }
 
-  // ================= LAST PRICE =================
-  Future<double> getLastPrice(String symbol) async {
-    final candles = await fetchCandles(symbol, TF.m1);
-    return candles.isNotEmpty ? candles.last.close : 0;
-  }
-
-  // ================= CONTRACT STREAM =================
-  StreamSubscription subscribeContract(
-    String id,
-    Function(Map<String, dynamic>) onUpdate,
-  ) {
-    final ctrl = _contracts.putIfAbsent(
-      id,
-      () => StreamController<Map<String, dynamic>>.broadcast(),
-    );
-
-    return ctrl.stream.listen(onUpdate);
-  }
-
-  Future<void> closeTradeById(String id) async {
-    await _contracts[id]?.close();
-    _contracts.remove(id);
-  }
-
-  // ================= HELPERS =================
   Future<Map<String, dynamic>> _sendAndWait(
-    String type,
-    Map<String, dynamic> data,
-  ) async {
+      String type, Map<String, dynamic> data) async {
     final c = Completer<Map<String, dynamic>>();
-    late StreamSubscription sub;
 
+    late StreamSubscription sub;
     sub = stream.listen((e) {
-      if (!c.isCompleted && e["msg_type"] == type) {
+      if (e["msg_type"] == type) {
         c.complete(e);
         sub.cancel();
       }
@@ -322,52 +246,35 @@ class DerivService {
     return c.future;
   }
 
-  // ================= RECONNECT =================
+  // ================= CONTRACT =================
+  StreamSubscription subscribeContract(
+      String id, Function(Map<String, dynamic>) onUpdate) {
+    return stream.listen((e) {
+      if (e["contract_id"]?.toString() == id) {
+        onUpdate(e);
+      }
+    });
+  }
+
+  Future<void> closeTradeById(String id) async {
+    _send({"forget": id});
+  }
+
+  // ================= HELPERS =================
+  void _send(Map<String, dynamic> d) {
+    try {
+      _channel?.sink.add(jsonEncode(d));
+    } catch (_) {}
+  }
+
   Future<void> _reconnect() async {
     _connected = false;
     _auth = false;
 
-    await Future.delayed(const Duration(seconds: 3));
-    await connect(_token);
-
-    final old = List<String>.from(_subscribed);
-    _subscribed.clear();
-
-    for (final key in old) {
-      final parts = key.split("-");
-      final symbol = parts[0];
-
-      final tf = TF.values.firstWhere(
-        (e) => e.name == parts[1],
-        orElse: () => TF.h1,
-      );
-
-      await subscribeCandles(symbol, tf: tf);
-    }
+    await Future.delayed(const Duration(seconds: 2));
+    await connect();
   }
 
-  // ================= BALANCE =================
-  Future<double> getBalance() async {
-    _send({"balance": 1});
-
-    final c = Completer<double>();
-    late StreamSubscription sub;
-
-    sub = stream.listen((e) {
-      if (e["msg_type"] == "balance") {
-        final b = e["balance"];
-        final value =
-            double.tryParse(b?["balance"]?.toString() ?? "0") ?? 0;
-
-        c.complete(value);
-        sub.cancel();
-      }
-    });
-
-    return c.future;
-  }
-
-  // ================= TF =================
   int _tfToSec(TF tf) {
     switch (tf) {
       case TF.m1:
@@ -380,11 +287,15 @@ class DerivService {
         return 86400;
       case TF.w1:
         return 604800;
+      case TF.mn:
+        return 2592000;
     }
   }
 
   TF _mapTF(int g) {
     switch (g) {
+      case 60:
+        return TF.m1;
       case 3600:
         return TF.h1;
       case 14400:
@@ -398,93 +309,7 @@ class DerivService {
     }
   }
 
-  String normalizeSymbol(String raw) =>
-      raw.trim().toUpperCase().replaceAll("FRX", "");
-
-Future<List<model.Candle>> getCandlesWithTF(
-  String symbolRaw, {
-  TF timeframe = TF.h1,
-}) async {
-  await ensureReady();
-
-  final symbol = normalizeSymbol(symbolRaw);
-
-  await subscribeCandles(symbol, tf: timeframe);
-
-  int retries = 0;
-
-  while ((_data[symbol]?[timeframe] ?? []).isEmpty && retries < 10) {
-    await Future.delayed(const Duration(milliseconds: 500));
-    retries++;
-  }
-
-  return _data[symbol]?[timeframe] ?? [];
-}
-
-  // ================= FIXED FALLBACK SYSTEM =================
-  void _buildFallback(String symbol) {
-    final m1 = _data[symbol]?[TF.m1] ?? [];
-    final h4 = _data[symbol]?[TF.h4] ?? [];
-    final d1 = _data[symbol]?[TF.d1] ?? [];
-
-    if (m1.length >= 10) {
-      _data[symbol]![TF.h1] = _aggregate(m1, 60);
-      _data[symbol]![TF.h4] = _aggregate(m1, 240);
-      _data[symbol]![TF.d1] = _aggregate(m1, 1440);
-      _data[symbol]![TF.w1] = _aggregate(m1, 10080);
-    }
-
-    if (m1.length < 10 && h4.isNotEmpty) {
-      _data[symbol]![TF.h1] = h4;
-      _data[symbol]![TF.h4] = h4;
-      _data[symbol]![TF.d1] = d1;
-    }
-  }
-
-  List<model.Candle> _aggregate(List<model.Candle> base, int sec) {
-    final out = <model.Candle>[];
-
-    for (final c in base) {
-      final bucket = (c.epoch ~/ sec) * sec;
-
-      if (out.isEmpty || out.last.epoch != bucket) {
-        out.add(c);
-      } else {
-        final last = out.last;
-
-        out[out.length - 1] = model.Candle(
-          epoch: last.epoch,
-          open: last.open,
-          close: c.close,
-          high: max(last.high, c.high),
-          low: min(last.low, c.low),
-          volume: last.volume + c.volume,
-        );
-      }
-    }
-
-    return out;
-  }
-
-  List<model.Candle> _buildWeeklyFromDaily(List<model.Candle> d1) {
-    final result = <model.Candle>[];
-
-    for (int i = 0; i + 4 < d1.length; i += 5) {
-      final chunk = d1.sublist(i, i + 5);
-
-      result.add(model.Candle(
-        epoch: chunk.first.epoch,
-        open: chunk.first.open,
-        high: chunk.map((e) => e.high).reduce(max),
-        low: chunk.map((e) => e.low).reduce(min),
-        close: chunk.last.close,
-        volume: chunk.fold<double>(
-          0.0,
-          (a, b) => a + (b.volume ?? 0.0),
-        ),
-      ));
-    }
-
-    return result;
+  String normalizeSymbol(String raw) {
+    return raw.toUpperCase().replaceAll("FRX", "").trim();
   }
 }
