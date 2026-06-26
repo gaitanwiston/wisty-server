@@ -107,7 +107,11 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
     final timestamp = json['timestamp']?.toString() ?? '';
 
     final symbol = symbolRaw.toUpperCase().trim();
-    final signalId = "${symbol}_$timestamp";
+    final safeTimestamp = timestamp.isNotEmpty
+    ? timestamp
+    : DateTime.now().millisecondsSinceEpoch.toString();
+
+final signalId = "${symbol}_$safeTimestamp";
 
     _trace("STEP 2 - NORMALIZED DATA", {
       "symbolRaw": symbolRaw,
