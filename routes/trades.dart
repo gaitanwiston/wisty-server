@@ -89,9 +89,34 @@ void _trace(String title, dynamic msg) {
 /// ================= ENTRY =================
 Future<Response> onRequest(RequestContext context) async {
   if (context.request.method == HttpMethod.get) {
+    // 🚨 FIX (bug halisi - "Open Trades" haikuwahi kuonyesha chochote):
+    // awali GET hii ilikuwa ikirudisha TU muhtasari (idadi ya
+    // trades) - HAIKUWA ikirudisha ORODHA YENYEWE ya trades zenye
+    // maelezo (contractId, pair, entry, sl, tp, n.k.). UI upande wa
+    // 'open_trades_panel.dart' (kupitia 'fetchActiveTrades()')
+    // inatarajia 'data["trades"]' iwe ORODHA ya maelezo kamili ya kila
+    // trade - bila hii, jopo la "Open Trades" lingeonyesha "Hakuna
+    // trade" KILA WAKATI, hata kama kweli kuna trades wazi.
+    final tradesList = TradeRegistry.instance.trades.values
+        .where((t) => !t.closed)
+        .map((t) => {
+              "contractId": t.contractId,
+              "pair": t.pair,
+              "buy": t.buy,
+              "entryPrice": t.entry,
+              "sl": t.sl,
+              "tp": t.tp,
+              "current": t.current,
+              "breakeven": t.breakeven,
+              "status": "OPEN",
+              "openedAt": t.openedAt.toIso8601String(),
+            })
+        .toList();
+
     return Response.json(
       body: {
         "success": true,
+        "trades": tradesList,
         "active_trades": TradeRegistry.instance.count,
         "cache_size": MarketAnalysisService.instance.latestKeys.length,
         "kill_switch": KILL_SWITCH,
