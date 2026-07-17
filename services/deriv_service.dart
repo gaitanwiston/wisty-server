@@ -2101,6 +2101,41 @@ List<model.Candle> _aggregateCalendar(
   Future<double> getBalance()
   async {
 
+    // 🚨 FIX (bug ile ile ya "muda" - sababu ya "$0 bila error"):
+    // awali hapa hapakuwa na uhakika wa kusubiri 'authorize'
+    // kuthibitika kabla ya kutuma ombi la "balance". Kama ombi
+    // linatumwa KABLA Deriv haijathibitisha akaunti (jambo
+    // linalowezekana SANA kwenye ombi la KWANZA la '/balance' mara
+    // baada ya server kuanza - sawa kabisa na bugs za
+    // 'getMarketPairs()'/'fetchHistoricalRange()' tulizozipata na
+    // kuzirekebisha awali), Deriv haijibu ipasavyo, 'completer'
+    // haikamiliki ndani ya sekunde 5, na function inarudi kwa
+    // '_balance' YA DEFAULT (0) KIMYA KIMYA - bila error yoyote
+    // inayoonekana. UI ilikuwa ikionyesha "$0" kihalali (si tatizo la
+    // UI) kwa sababu server YENYEWE ilikuwa ikirudisha 0 halisi.
+    //
+    // Sasa: tunasubiri (poll) hadi 'authorize' ithibitike (hadi
+    // sekunde 15) kabla ya kutuma ombi.
+    if (!_connected) {
+      await connect();
+    }
+
+    if (!_auth) {
+      const maxWait = Duration(seconds: 15);
+      const pollEvery = Duration(milliseconds: 200);
+      final deadline = DateTime.now().add(maxWait);
+
+      while (!_auth && DateTime.now().isBefore(deadline)) {
+        await Future.delayed(pollEvery);
+      }
+
+      if (!_auth) {
+        print(
+          "⚠️ getBalance(): authorize haijathibitika baada ya "
+          "${maxWait.inSeconds}s - balance inaweza kuwa si sahihi (0).",
+        );
+      }
+    }
 
     final completer =
         Completer<double>();
