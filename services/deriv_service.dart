@@ -13,7 +13,7 @@ import '../models/candle.dart' as model;
 // akaunti yako ya Deriv) bado ipo - itafutwa (revoke) na kuhamishiwa
 // kwenye --dart-define/.env pale utakapokuwa tayari.
 const String derivToken =
-    "pat_572705c43ba96a052bdb5cf0eb9247c2e8efde648548b4cc172111354e9b4338";
+    "pat_0fccfffc5d1eaace805fb961cd606399a8665f15e6e40da9cdd313a67ac8ec08";
 
 const int derivAppId = 1089;
 
@@ -2173,6 +2173,46 @@ List<model.Candle> _aggregateCalendar(
 
                   0;
 
+                // 🚨 ONGEZO JIPYA (diagnostic - kwa ombi la
+                // mtumiaji): Deriv HAIRUDISHI balance ya AKAUNTI ZOTE
+                // ulizonazo kwa default - inarudisha TU balance ya
+                // AKAUNTI MOJA iliyounganishwa na token hii mahususi
+                // (angalia 'loginid' hapa chini). Kama una akaunti
+                // NYINGI (Real, Demo, Wallets tofauti za "Options"
+                // dhidi ya "Multipliers/CFDs"), pesa yako HALISI
+                // inaweza kuwa kwenye akaunti TOFAUTI na hii - $0
+                // ingekuwa SAHIHI kihalali kwa akaunti hii mahususi,
+                // hata kama una pesa mahali pengine. Sasa tunachapisha
+                // AKAUNTI ZOTE zilizounganishwa (kutokana na
+                // "account":"all" hapa chini) ili tuone wazi kama
+                // kuna tofauti.
+                print(
+                  "💰 BALANCE (akaunti ya SASA/default): "
+                  "${b["balance"]} ${b["currency"]} "
+                  "(loginid: ${b["loginid"]})",
+                );
+
+                final accounts = b["accounts"];
+                if (accounts is Map) {
+                  print("💰 AKAUNTI ZOTE ZILIZOUNGANISHWA:");
+                  accounts.forEach((loginId, info) {
+                    if (info is Map) {
+                      print(
+                        "   $loginId : ${info["balance"]} "
+                        "${info["currency"]} "
+                        "(demo: ${info["demo_account"]}, "
+                        "type: ${info["type"]})",
+                      );
+                    }
+                  });
+                  print(
+                    "⚠️ Kama unaona akaunti YENYE PESA hapo juu "
+                    "isiyo sawa na loginid ya default (${b["loginid"]}) "
+                    "- hiyo ndiyo inayoshikilia fedha zako, si ile "
+                    "inayotumika sasa na token hii.",
+                  );
+                }
+
 
 
                 if(!completer.isCompleted){
@@ -2200,9 +2240,16 @@ List<model.Candle> _aggregateCalendar(
 
 
 
+    // FIX (diagnostic): "account":"all" inalazimisha Deriv kutuma
+    // maelezo ya akaunti ZOTE zilizounganishwa ndani ya jibu hili hili
+    // moja (angalia b["accounts"] hapo juu) - bila hii, tungepata TU
+    // balance ya akaunti moja ya default bila muktadha wowote wa
+    // akaunti nyingine zilizopo.
     _send({
 
       "balance":1,
+
+      "account": "all",
 
     });
 
