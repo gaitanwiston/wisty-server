@@ -821,8 +821,109 @@ Future<String?> placeTrade(
 
 
   // =====================================================
-  // INIT CACHE
+  // UPDATE CONTRACT SL/TP (ONGEZO JIPYA)
   // =====================================================
+  //
+  // MADHUMUNI: kubadilisha SL/TP HALISI za contract iliyo wazi tayari
+  // kwenye Deriv - kupitia ombi la 'contract_update' (limethibitishwa
+  // kutoka developers.deriv.com/comparison/contract-update/). Hii
+  // ndiyo njia PEKEE ya kufanya "breakeven"/"TP extension" kuwa
+  // HALISI upande wa Deriv - bila hii, mabadiliko ya SL/TP ni ya
+  // NDANI TU (kwenye kumbukumbu ya server), Deriv haijui kabisa kuhusu
+  // mabadiliko hayo, na 'limit_order' ya AWALI (wakati wa
+  // kufungua trade) ndiyo pekee inayotekelezwa kama muunganisho
+  // ukikatika.
+  //
+  // ⚠️ MUHIMU: Deriv 'limit_order.stop_loss'/'take_profit' kwenye
+  // 'contract_update' ni KWA FEDHA (kiasi cha hasara/faida - USD), SI
+  // bei ghafi ya soko - SAWA KABISA na 'placeTrade()'. Kwa hiyo
+  // tunahitaji 'entryPrice'/'stake'/'multiplier' za AWALI (kutoka
+  // wakati trade ilipofunguliwa) kuhesabu kiasi sahihi cha fedha kwa
+  // bei mpya ya SL/TP.
+  Future<bool> updateContractSLTP(
+    String contractId, {
+    double? newStopLossPrice,
+    double? newTakeProfitPrice,
+    required double entryPrice,
+    required double stake,
+    required int multiplier,
+  }) async {
+    if (entryPrice <= 0) {
+      print("⚠️ updateContractSLTP: entryPrice batili ($entryPrice).");
+      return false;
+    }
+
+    final Map<String, dynamic> limitOrder = {};
+
+    if (newStopLossPrice != null) {
+      final slPercent = (entryPrice - newStopLossPrice).abs() / entryPrice;
+      final slAmount = stake * multiplier * slPercent;
+      limitOrder["stop_loss"] = double.parse(slAmount.toStringAsFixed(2));
+    }
+
+    if (newTakeProfitPrice != null) {
+      final tpPercent = (newTakeProfitPrice - entryPrice).abs() / entryPrice;
+      final tpAmount = stake * multiplier * tpPercent;
+      limitOrder["take_profit"] = double.parse(tpAmount.toStringAsFixed(2));
+    }
+
+    if (limitOrder.isEmpty) {
+      print("⚠️ updateContractSLTP: hakuna SL/TP mpya iliyotolewa.");
+      return false;
+    }
+
+    final contractIdInt = int.tryParse(contractId);
+
+    if (contractIdInt == null) {
+      print("⚠️ updateContractSLTP: contractId si namba halali ($contractId).");
+      return false;
+    }
+
+    final completer = Completer<Map<String, dynamic>>();
+    late StreamSubscription sub;
+
+    sub = stream.listen((event) {
+      if (event["msg_type"] == "contract_update") {
+        if (!completer.isCompleted) completer.complete(event);
+        sub.cancel();
+      } else if (event["msg_type"] == "error") {
+        if (!completer.isCompleted) completer.complete(event);
+        sub.cancel();
+      }
+    });
+
+    _send({
+      "contract_update": 1,
+      "contract_id": contractIdInt,
+      "limit_order": limitOrder,
+    });
+
+    final result = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => <String, dynamic>{},
+    );
+
+    if (result["msg_type"] == "error") {
+      print(
+        "❌ contract_update error ($contractId): "
+        "${result["error"]?["message"] ?? result["error"]}",
+      );
+      return false;
+    }
+
+    final ok = result["contract_update"] != null;
+
+    if (ok) {
+      print(
+        "✅ CONTRACT UPDATED $contractId: "
+        "SL/TP mpya (fedha) => $limitOrder",
+      );
+    }
+
+    return ok;
+  }
+
+
 
 
   void _init(String symbol){

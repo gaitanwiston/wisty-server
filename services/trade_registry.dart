@@ -16,6 +16,13 @@ import 'dart:async';
 // inayoweza kufikiwa na route ZOTE - 'trades.dart' inaandika (wakati
 // trade inafunguliwa/kufungwa), 'candles.dart' (au route nyingine
 // yoyote) inasoma TU.
+//
+// ONGEZO JIPYA: 'stake'/'multiplier' - zinahitajika kuhesabu KIASI CHA
+// FEDHA sahihi wakati wa kubadilisha SL/TP HALISI za Deriv baadaye
+// (kupitia 'contract_update' - angalia deriv_service.dart.
+// updateContractSLTP()) - bila kujua stake/multiplier ya AWALI,
+// haiwezekani kubadilisha bei mpya ya TP kuwa kiasi sahihi cha fedha
+// kinachohitajika na Deriv.
 
 class ActiveTrade {
   final String contractId;
@@ -26,10 +33,20 @@ class ActiveTrade {
   double tp;
   double current;
 
+  // ONGEZO JIPYA: zinahitajika kwa 'updateContractSLTP()' (kuhesabu
+  // kiasi cha fedha sahihi cha TP mpya).
+  final double stake;
+  final int multiplier;
+
   bool breakeven = false;
   bool closed = false;
 
   final DateTime openedAt;
+
+  // ONGEZO JIPYA: muda wa mwisho tulipoangalia kama TP inafaa
+  // kupanuliwa (throttle - usiangalie kila 'tick', angalia kila muda
+  // fulani TU - angalia _subscribeToTrade() kwenye trades.dart).
+  DateTime? lastTpCheck;
 
   ActiveTrade({
     required this.contractId,
@@ -38,6 +55,8 @@ class ActiveTrade {
     required this.entry,
     required this.sl,
     required this.tp,
+    this.stake = 0,
+    this.multiplier = 100,
     this.current = 0,
     DateTime? openedAt,
   }) : openedAt = openedAt ?? DateTime.now().toUtc();

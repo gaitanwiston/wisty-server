@@ -363,6 +363,11 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       entry: entry,
       sl: sl,
       tp: tp,
+      // ONGEZO JIPYA: zinahitajika kwa updateContractSLTP() (TP
+      // extension/breakeven halisi upande wa Deriv - angalia
+      // _subscribeToTrade() chini).
+      stake: stake,
+      multiplier: DEFAULT_MULTIPLIER,
     );
 
     TradeRegistry.instance.register(trade);
@@ -432,19 +437,25 @@ void _checkDailyLimits() {
 }
 
 /// ================= SUBSCRIBE =================
-// KUMBUKA: hii inabaki kama ULINZI WA ZIADA (defense-in-depth) - hata
-// baada ya Deriv kuwa na 'limit_order' halisi (SL/TP upande wa broker),
-// ufuatiliaji huu wa ndani unatoa safu ya pili + unashughulikia
-// "breakeven" (kuhamisha SL hadi entry baada ya faida ya 1R).
+// 🚨 FIX/ONGEZO KUBWA: Deriv sasa INABADILISHWA HALISI (kupitia
+// 'updateContractSLTP()' - contract_update) - SI tena "ndani TU" kama
+// ilivyokuwa awali. Ufuatiliaji huu bado unabaki kama safu ya PILI ya
+// ulinzi (defense-in-depth) - endapo 'contract_update' ikishindwa kwa
+// sababu yoyote, ufuatiliaji wa ndani bado unaendelea kufunga trade
+// kwa usahihi kwa kutumia thamani za ndani.
 //
-// ⚠️ KIKOMO KILICHOBAKI: 'trade.sl = trade.entry' (breakeven) hapa
-// inabadilisha TU thamani ya NDANI (kwa ufuatiliaji wa server hii) -
-// HAIBADILISHI 'limit_order.stop_loss' halisi iliyowekwa Deriv wakati
-// wa kufungua trade (Deriv haijui kuhusu "breakeven" hii). Kubadilisha
-// SL halisi ya Deriv kunahitaji ombi jipya la 'contract_update' -
-// haijatengenezwa humu bado. Kwa sasa, breakeven ni ulinzi wa ZIADA wa
-// ndani TU, si uingizwaji wa SL ya Deriv - niambie ukihitaji
-// 'contract_update' iongezwe.
+// ONGEZO JIPYA #2 (kwa ombi la mtumiaji - "fuatilia soko ili kuajust
+// TP kama bado hali ni nzuri"): kila muda fulani (throttled - si kila
+// 'tick', angalia THROTTLE hapa chini), tunachukua UCHAMBUZI MPYA
+// KABISA wa alama hii kutoka MarketAnalysisService, na kama bado
+// unaonyesha mwelekeo ULE ULE (trend bado ni nzuri) NA TP mpya
+// iliyohesabiwa (kwa SL/TP structure-aware mpya) ni BORA zaidi (mbali
+// zaidi, faida zaidi) kuliko TP ya sasa - TUNAPANUA TP (kuruhusu
+// faida iendelee kukua), kwa NJIA MBILI: ndani ya server (kwa
+// ufuatiliaji), NA HALISI upande wa Deriv (kupitia
+// updateContractSLTP()).
+const Duration _tpCheckThrottle = Duration(seconds: 45);
+
 void _subscribeToTrade(ActiveTrade trade) {
   final deriv = DerivService.instance;
 
@@ -464,7 +475,36 @@ void _subscribeToTrade(ActiveTrade trade) {
     if (!trade.breakeven && rr >= 1) {
       trade.sl = trade.entry;
       trade.breakeven = true;
-      _trace("BREAKEVEN (ndani TU)", trade.contractId);
+
+      // 🚨 FIX (usalama mkubwa): sasa tunabadilisha SL HALISI ya
+      // Deriv pia (si tu thamani ya ndani) - kupitia
+      // 'contract_update'. Kama hii ikishindwa (mf. tatizo la
+      // muunganisho), trade.sl (ndani) bado imesasishwa - ufuatiliaji
+      // wa ndani utaendelea kulinda, ingawa Deriv yenyewe haitajua
+      // kuhusu hilo mpaka jaribio lijalo/mafanikio.
+      final updated = await deriv.updateContractSLTP(
+        trade.contractId,
+        newStopLossPrice: trade.sl,
+        entryPrice: trade.entry,
+        stake: trade.stake,
+        multiplier: trade.multiplier,
+      );
+
+      _trace(
+        "BREAKEVEN",
+        "${trade.contractId} - Deriv update: "
+        "${updated ? 'IMEFANIKIWA' : 'IMESHINDWA (ulinzi wa ndani bado upo)'}",
+      );
+    }
+
+    // ONGEZO JIPYA: TP extension - throttled (si kila tick).
+    final now = DateTime.now().toUtc();
+    final dueForCheck = trade.lastTpCheck == null ||
+        now.difference(trade.lastTpCheck!) >= _tpCheckThrottle;
+
+    if (dueForCheck && rr > 0) {
+      trade.lastTpCheck = now;
+      await _maybeExtendTakeProfit(trade);
     }
 
     final tpHit = trade.buy ? price >= trade.tp : price <= trade.tp;
@@ -476,6 +516,53 @@ void _subscribeToTrade(ActiveTrade trade) {
   });
 
   TradeRegistry.instance.subscriptions[trade.contractId] = sub;
+}
+
+/// ================= TP EXTENSION (ONGEZO JIPYA) =================
+/// Kama uchambuzi WA SASA (fresh) bado unaonyesha mwelekeo ULE ULE
+/// wenye nguvu, na TP mpya iliyohesabiwa (kwa mantiki ya SL/TP
+/// structure-aware) ni BORA zaidi kuliko TP ya sasa ya trade hii -
+/// panua TP, ndani ya server NA halisi upande wa Deriv.
+Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
+  try {
+    final freshAnalysis =
+        MarketAnalysisService.instance.latestFor(trade.pair);
+
+    if (freshAnalysis == null) return;
+
+    // Soko bado ni "zuri" kwa mwelekeo huu HALISI - uchambuzi mpya
+    // bado unathibitisha mwelekeo ULE ULE wa trade hii.
+    final stillGood =
+        trade.buy ? freshAnalysis.canBuy : freshAnalysis.canSell;
+
+    if (!stillGood) return;
+
+    final freshTp = freshAnalysis.risk.takeProfit;
+
+    final improved =
+        trade.buy ? freshTp > trade.tp : freshTp < trade.tp;
+
+    if (!improved) return;
+
+    final oldTp = trade.tp;
+    trade.tp = freshTp;
+
+    final updated = await DerivService.instance.updateContractSLTP(
+      trade.contractId,
+      newTakeProfitPrice: freshTp,
+      entryPrice: trade.entry,
+      stake: trade.stake,
+      multiplier: trade.multiplier,
+    );
+
+    _trace(
+      "TP EXTENDED (soko bado ni zuri)",
+      "${trade.pair} ${trade.contractId}: $oldTp -> $freshTp "
+      "(Deriv update: ${updated ? 'IMEFANIKIWA' : 'IMESHINDWA'})",
+    );
+  } catch (e) {
+    _trace("TP EXTENSION ERROR", "${trade.contractId}: $e");
+  }
 }
 
 /// ================= CLOSE =================
