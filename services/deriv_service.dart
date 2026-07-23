@@ -787,44 +787,30 @@ class DerivService {
 // COMPATIBILITY FOR trades.dart
 // =====================================================
 
-// 🚨 FIX MKUBWA (uwiano wa kimkakati kati ya uchambuzi na
-// utekelezaji): awali kazi hii ilikuwa ikitumia CALL/PUT (binary
-// options - "Rise/Fall") ambazo zina matatizo matatu makubwa:
-//   1) HAZINA dhana ya Stop Loss/Take Profit kwa BEI HALISI kabisa -
-//      zinafunga tu baada ya muda maalum ("duration"), bila kujali
-//      bei imefika wapi. Injini ya uchambuzi (_analyze()) inahesabu
-//      risk.stopLoss/risk.takeProfit kwa uangalifu (kutoka ATR) -
-//      lakini hizo HAZIKUWAHI kutumika popote kwenye placeTrade() ya
-//      awali - kazi mbili muhimu za mfumo (uchambuzi na utekelezaji)
-//      hazikuwa zikiongea kabisa.
-//   2) Ilikuwa HAINA "duration"/"duration_unit" kabisa - fields za
-//      LAZIMA kwa CALL/PUT. Kila ombi la "proposal" lilikuwa
-//      likikataliwa na Deriv, hivyo placeTrade() ILIKUWA IKISHINDWA
-//      100% ya nyakati (hata kama masharti mengine yote yalikuwa sahihi).
-//   3) 'symbol' iliyotumwa kwa Deriv ilikuwa UPPERCASE (bug ile ile ya
-//      casing tuliyoirekebisha kwenye subscribeCandles/
-//      fetchHistoricalRange - FRX/CRY/STPRNG zisingefanya kazi hata
-//      baada ya (1) na (2) kurekebishwa).
+// 🚨🚨🚨 MABADILIKO MAKUBWA (Options API - kwa ombi la mtumiaji):
+// tuligundua kwamba akaunti hii inatumia bidhaa ya "Options" ya
+// Deriv, ambayo HAINA Multiplier contracts (MULTUP/MULTDOWN) - badala
+// yake ina CALL/PUT (Rise/Fall) TU kama contract_type iliyothibitika
+// wazi kwenye nyaraka rasmi. CALL/PUT HAINA dhana ya
+// 'limit_order'/'stop_loss'/'take_profit' asili kabisa - ni "dau" la
+// muda maalum (duration), likiisha unashinda/unapoteza kulingana na
+// bei ilipo wakati huo, bila kujali SL/TP.
 //
-// SASA: MULTUP/MULTDOWN (Multiplier contracts) zinatumika badala yake
-// - hizi ZINAUNGA MKONO 'limit_order: {stop_loss, take_profit}' HALISI,
-// zikitumia risk.stopLoss/risk.takeProfit zilizohesabiwa na injini -
-// hakuna "duration" ya lazima (position inabaki wazi hadi SL/TP
-// ifikiwe, au ufunge mwenyewe kwa mkono).
+// UAMUZI WA KIMKAKATI (kwa makubaliano na mtumiaji): SL/TP zenye
+// ufahamu wa muundo tulizojenga (market_analysis_service.dart)
+// HAZITAACHWA - zinabaki kusimamiwa KABISA na 'trades.dart' (server
+// 2) kupitia ufuatiliaji wa bei wa ndani (angalia
+// _subscribeToTrade()) - ikifunga contract MAPEMA kwa mkono
+// (kupitia sellContract() chini) pale bei inapofika SL/TP zetu,
+// badala ya kusubiri Deriv ifanye hivyo (haiwezekani kwa CALL/PUT).
 //
-// ⚠️ MUHIMU #1: Deriv 'limit_order.stop_loss'/'take_profit' kwenye
-// Multipliers ni KWA FEDHA (kiasi cha hasara/faida katika currency ya
-// akaunti - USD), SI bei ghafi ya soko. Kwa hiyo tunahesabu kiasi cha
-// fedha kinacholingana na asilimia ya mabadiliko ya bei (kutoka
-// entryPrice/stopLossPrice/takeProfitPrice) ukizidisha na 'multiplier'
-// na 'stake'.
+// 'duration' hapa ni "wavu wa usalama" TU (muda wa juu kabisa wa
+// kushikilia, kama contract haijafungwa mapema na SL/TP zetu) - si
+// utaratibu mkuu wa kutoka.
 //
-// ⚠️ MUHIMU #2: thamani halali za 'multiplier' HUTOFAUTIANA kwa kila
-// alama na account (mf. synthetics zinaweza kuruhusu hadi 100x-1000x,
-// forex huenda ikawa chache zaidi) - default ya 100 hapa ni ya kawaida
-// TU. Kabla ya kutumia kwenye akaunti ya pesa halisi, THIBITISHA
-// multiplier halali kwa kila alama kwa kutumia ombi la 'contracts_for'
-// (halijatengenezwa humu - nikuongezee ukihitaji).
+// ⚠️ MABADILIKO MENGINE MUHIMU (kutoka "Proposal Comparison" - nyaraka
+// rasmi za Deriv): field 'symbol' imebadilishwa jina kuwa
+// 'underlying_symbol' kwenye ombi la 'proposal'.
 Future<String?> placeTrade(
   String pair,
   bool isBuy, {
@@ -832,39 +818,13 @@ Future<String?> placeTrade(
   double? entryPrice,
   double? stopLossPrice,
   double? takeProfitPrice,
-  int multiplier = 100,
+  int multiplier = 100, // haitumiki tena (Multiplier-specific) - imehifadhiwa kwa uwiano wa API ya nje, haina athari kwa CALL/PUT
+  int durationMinutes = 1440, // "wavu wa usalama" (siku 1) - SL/TP zetu za ndani ndizo zinazoamua kufunga mapema, si hii
 }) async {
 
   final symbol = normalizeSymbol(pair);
 
   try {
-
-    // Tengeneza 'limit_order' (SL/TP kwa fedha) TU kama tuna bei za
-    // kutosha za kuhesabia - vinginevyo trade inafunguliwa bila
-    // ulinzi wa SL/TP (hatari - epuka hili kwenye pesa halisi).
-    final Map<String, dynamic> limitOrder = {};
-
-    if (entryPrice != null && entryPrice > 0) {
-
-      if (stopLossPrice != null) {
-        final slPercent = (entryPrice - stopLossPrice).abs() / entryPrice;
-        final slAmount = stake * multiplier * slPercent;
-        limitOrder["stop_loss"] = double.parse(slAmount.toStringAsFixed(2));
-      }
-
-      if (takeProfitPrice != null) {
-        final tpPercent = (takeProfitPrice - entryPrice).abs() / entryPrice;
-        final tpAmount = stake * multiplier * tpPercent;
-        limitOrder["take_profit"] = double.parse(tpAmount.toStringAsFixed(2));
-      }
-    }
-
-    if (limitOrder.isEmpty) {
-      print(
-        "⚠️ placeTrade($symbol): hakuna entryPrice/SL/TP zilizotolewa - "
-        "trade itafunguliwa BILA ulinzi wa Stop Loss/Take Profit.",
-      );
-    }
 
     // 1. GET PROPOSAL
     final proposalCompleter = Completer<Map<String, dynamic>>();
@@ -877,10 +837,6 @@ Future<String?> placeTrade(
         }
         proposalSub.cancel();
       } else if (event["msg_type"] == "error") {
-        // FIX: awali "error" haikuwahi kumaliza (complete) hii
-        // completer - ombi lililoshindwa lingesubiri MUDA WOTE hadi
-        // timeout ya sekunde 10 badala ya kushindwa mara moja kwa
-        // ujumbe wazi wa sababu.
         if (!proposalCompleter.isCompleted) {
           proposalCompleter.complete(event);
         }
@@ -892,13 +848,15 @@ Future<String?> placeTrade(
       "proposal": 1,
       "amount": stake,
       "basis": "stake",
-      "contract_type": isBuy ? "MULTUP" : "MULTDOWN",
+      "contract_type": isBuy ? "CALL" : "PUT",
       "currency": "USD",
-      // FIX (casing): 'pair' (jina halisi), si 'symbol' (UPPERCASE) -
-      // bug ile ile iliyofanywa mahali pengine kwenye faili hii.
-      "symbol": pair,
-      "multiplier": multiplier,
-      if (limitOrder.isNotEmpty) "limit_order": limitOrder,
+      // FIX (jina jipya la field - Options API "Proposal Comparison"):
+      // 'underlying_symbol' badala ya 'symbol' ya zamani. Tunatumia
+      // 'pair' (jina halisi la Deriv), si 'symbol' (UPPERCASE) - bug
+      // ile ile ya casing iliyofanywa mahali pengine kwenye faili hii.
+      "underlying_symbol": pair,
+      "duration": durationMinutes,
+      "duration_unit": "m",
     });
 
     final proposal = await proposalCompleter.future.timeout(
@@ -916,8 +874,11 @@ Future<String?> placeTrade(
 
     final p = proposal["proposal"];
 
-    if (p == null) {
-      print("❌ Proposal failed ($symbol) - hakuna jibu kutoka Deriv.");
+    // FIX (kutoka "Proposal Comparison"): 'id' NDIYO field pekee
+    // inayohakikishwa kuwepo kwenye jibu jipya - fields nyingine
+    // (ask_price, payout, spot) zinaweza zisiwepo kila wakati.
+    if (p == null || p["id"] == null) {
+      print("❌ Proposal failed ($symbol) - hakuna 'id' kwenye jibu kutoka Deriv.");
       return null;
     }
 
@@ -961,10 +922,11 @@ Future<String?> placeTrade(
 
     if (contractId != null) {
       print(
-        "✅ TRADE OPENED $symbol ID:$contractId "
-        "(${isBuy ? "MULTUP" : "MULTDOWN"} ${multiplier}x "
-        "SL:${limitOrder["stop_loss"] ?? "N/A"} "
-        "TP:${limitOrder["take_profit"] ?? "N/A"})",
+        "✅ TRADE OPENED (CALL/PUT - Options API) $symbol ID:$contractId "
+        "(${isBuy ? "CALL" : "PUT"}, wavu wa usalama: "
+        "${durationMinutes}min) - SL/TP HALISI zinasimamiwa na "
+        "trades.dart (server 2), SI Deriv (CALL/PUT haina limit_order "
+        "asili).",
       );
     }
 
@@ -980,6 +942,55 @@ Future<String?> placeTrade(
 
   }
 
+}
+
+// ONGEZO JIPYA: kufunga contract KABLA ya muda wake wa asili
+// (durationMinutes) kuisha - hii ndiyo njia HALISI ya "SL/TP" kwa
+// CALL/PUT (ambazo hazina limit_order asili). 'trades.dart' inaita
+// hii mara bei inapofika SL/TP zetu za ndani zilizohesabiwa na
+// market_analysis_service.dart.
+Future<bool> sellContract(String contractId, {double price = 0}) async {
+  try {
+    final completer = Completer<Map<String, dynamic>>();
+    late StreamSubscription sub;
+
+    sub = stream.listen((event) {
+      if (event["msg_type"] == "sell") {
+        if (!completer.isCompleted) completer.complete(event);
+        sub.cancel();
+      } else if (event["msg_type"] == "error") {
+        if (!completer.isCompleted) completer.complete(event);
+        sub.cancel();
+      }
+    });
+
+    final contractIdInt = int.tryParse(contractId);
+
+    _send({
+      "sell": contractIdInt ?? contractId,
+      "price": price,
+    });
+
+    final result = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => <String, dynamic>{},
+    );
+
+    if (result["msg_type"] == "error") {
+      print(
+        "❌ sellContract error ($contractId): "
+        "${result["error"]?["message"] ?? result["error"]}",
+      );
+      return false;
+    }
+
+    print("🔴 CONTRACT SOLD (mkono - SL/TP ya ndani) $contractId");
+
+    return true;
+  } catch (e) {
+    print("❌ sellContract error ($contractId): $e");
+    return false;
+  }
 }
 
 
@@ -1003,6 +1014,14 @@ Future<String?> placeTrade(
   // tunahitaji 'entryPrice'/'stake'/'multiplier' za AWALI (kutoka
   // wakati trade ilipofunguliwa) kuhesabu kiasi sahihi cha fedha kwa
   // bei mpya ya SL/TP.
+  //
+  // 🚨🚨🚨 ONYO (baada ya kubadilika kwenda CALL/PUT - Options API):
+  // KAZI HII HAITAFANYA KAZI TENA kwa trades za CALL/PUT (haina
+  // 'contract_update'/'limit_order' asili kabisa - hizo ni dhana za
+  // Multiplier contracts TU). Imebakizwa hapa bila kuondolewa kwa
+  // usalama (endapo siku moja mtumiaji atabadili kutumia Multipliers
+  // tena), lakini 'trades.dart' SASA inatumia 'sellContract()' (hapo
+  // juu) kwa SL/TP/breakeven - SI kazi hii - kwa CALL/PUT.
   Future<bool> updateContractSLTP(
     String contractId, {
     double? newStopLossPrice,
@@ -2228,20 +2247,21 @@ List<model.Candle> _aggregateCalendar(
   // =====================================================
 
 
+  // 🚨🚨🚨 FIX YA BUG KUBWA ILIYOKUWEPO TANGU MWANZO (imegunduliwa
+  // wakati wa kuhamia CALL/PUT): kazi hii ilikuwa ikituma
+  // '{"forget": id}' - AMRI YA "ACHA KUFUATILIA" (unsubscribe kutoka
+  // stream ya masasisho) - SI amri ya kufunga/kuuza position halisi!
+  // Hii ilimaanisha trades HAZIKUWAHI kufungwa kwa usahihi kabisa -
+  // zilibaki WAZI kwenye Deriv milele (au hadi zitakapoisha muda wake
+  // wa asili), wakati sisi tulikuwa tu "tumeacha kusikiliza" kimya
+  // kimya, tukidhani tumezifunga. Sasa inatumia '{"sell": id}' HALISI
+  // (kupitia sellContract() - angalia hapo juu) - amri sahihi ya
+  // Deriv ya kufunga contract.
   Future<void> closeTradeById(
       String id,
   ) async {
 
-
-
-    _send({
-
-      "forget":
-          id,
-
-    });
-
-
+    await sellContract(id);
 
   }
 

@@ -363,9 +363,11 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       entry: entry,
       sl: sl,
       tp: tp,
-      // ONGEZO JIPYA: zinahitajika kwa updateContractSLTP() (TP
-      // extension/breakeven halisi upande wa Deriv - angalia
-      // _subscribeToTrade() chini).
+      // KUMBUKA: 'stake'/'multiplier' zimehifadhiwa kwenye ActiveTrade
+      // kwa uwiano wa API (na endapo siku moja kutahamia Multipliers
+      // tena) - kwa CALL/PUT ya sasa, SL/TP zinasimamiwa NA
+      // kutekelezwa NA server hii YENYEWE (_subscribeToTrade() chini),
+      // si na Deriv.
       stake: stake,
       multiplier: DEFAULT_MULTIPLIER,
     );
@@ -437,23 +439,21 @@ void _checkDailyLimits() {
 }
 
 /// ================= SUBSCRIBE =================
-// 🚨 FIX/ONGEZO KUBWA: Deriv sasa INABADILISHWA HALISI (kupitia
-// 'updateContractSLTP()' - contract_update) - SI tena "ndani TU" kama
-// ilivyokuwa awali. Ufuatiliaji huu bado unabaki kama safu ya PILI ya
-// ulinzi (defense-in-depth) - endapo 'contract_update' ikishindwa kwa
-// sababu yoyote, ufuatiliaji wa ndani bado unaendelea kufunga trade
-// kwa usahihi kwa kutumia thamani za ndani.
+// MABADILIKO MAKUBWA (baada ya kuhamia CALL/PUT - Options API):
+// CALL/PUT HAINA 'contract_update'/'limit_order' asili kabisa (hizo
+// ni dhana za Multiplier contracts TU, ambazo hazipatikani kwenye
+// akaunti hii). Kwa hiyo SL/TP HAZIWEZI "kubadilishwa" upande wa
+// Deriv - ufuatiliaji wa NDANI (humu humu) NDIYO utaratibu MKUU (SI
+// safu ya pili tena) wa kuamua ni lini trade inafungwa - kwa
+// kutumia 'sellContract()' (kuuza contract mapema, kabla ya muda
+// wake wa asili "wavu wa usalama" kuisha).
 //
-// ONGEZO JIPYA #2 (kwa ombi la mtumiaji - "fuatilia soko ili kuajust
-// TP kama bado hali ni nzuri"): kila muda fulani (throttled - si kila
-// 'tick', angalia THROTTLE hapa chini), tunachukua UCHAMBUZI MPYA
-// KABISA wa alama hii kutoka MarketAnalysisService, na kama bado
-// unaonyesha mwelekeo ULE ULE (trend bado ni nzuri) NA TP mpya
-// iliyohesabiwa (kwa SL/TP structure-aware mpya) ni BORA zaidi (mbali
-// zaidi, faida zaidi) kuliko TP ya sasa - TUNAPANUA TP (kuruhusu
-// faida iendelee kukua), kwa NJIA MBILI: ndani ya server (kwa
-// ufuatiliaji), NA HALISI upande wa Deriv (kupitia
-// updateContractSLTP()).
+// Kwa ombi la mtumiaji - "fuatilia soko ili kuajust TP kama bado hali
+// ni nzuri": kila muda fulani (throttled), tunachukua UCHAMBUZI MPYA
+// KABISA wa alama hii, na kama bado unaonyesha mwelekeo ULE ULE NA TP
+// mpya iliyohesabiwa ni BORA zaidi - TUNAPANUA TP (ndani TU - hakuna
+// haja ya "kuambia" Deriv, kwa kuwa CALL/PUT haina TP ya asili
+// kuibadilisha).
 const Duration _tpCheckThrottle = Duration(seconds: 45);
 
 void _subscribeToTrade(ActiveTrade trade) {
@@ -473,31 +473,17 @@ void _subscribeToTrade(ActiveTrade trade) {
         : (trade.entry - price) / risk;
 
     if (!trade.breakeven && rr >= 1) {
+      // FIX: sasisha SL ya NDANI TU - hakuna 'contract_update' kwa
+      // CALL/PUT (haipo). Ufuatiliaji huu wa ndani (tpHit/slHit hapa
+      // chini) NDIYO utakaogundua bei ikigusa SL hii mpya na
+      // kuamuru 'sellContract()'.
       trade.sl = trade.entry;
       trade.breakeven = true;
 
-      // 🚨 FIX (usalama mkubwa): sasa tunabadilisha SL HALISI ya
-      // Deriv pia (si tu thamani ya ndani) - kupitia
-      // 'contract_update'. Kama hii ikishindwa (mf. tatizo la
-      // muunganisho), trade.sl (ndani) bado imesasishwa - ufuatiliaji
-      // wa ndani utaendelea kulinda, ingawa Deriv yenyewe haitajua
-      // kuhusu hilo mpaka jaribio lijalo/mafanikio.
-      final updated = await deriv.updateContractSLTP(
-        trade.contractId,
-        newStopLossPrice: trade.sl,
-        entryPrice: trade.entry,
-        stake: trade.stake,
-        multiplier: trade.multiplier,
-      );
-
-      _trace(
-        "BREAKEVEN",
-        "${trade.contractId} - Deriv update: "
-        "${updated ? 'IMEFANIKIWA' : 'IMESHINDWA (ulinzi wa ndani bado upo)'}",
-      );
+      _trace("BREAKEVEN (SL ya ndani imesogezwa hadi entry)", trade.contractId);
     }
 
-    // ONGEZO JIPYA: TP extension - throttled (si kila tick).
+    // TP extension - throttled (si kila tick).
     final now = DateTime.now().toUtc();
     final dueForCheck = trade.lastTpCheck == null ||
         now.difference(trade.lastTpCheck!) >= _tpCheckThrottle;
@@ -522,7 +508,8 @@ void _subscribeToTrade(ActiveTrade trade) {
 /// Kama uchambuzi WA SASA (fresh) bado unaonyesha mwelekeo ULE ULE
 /// wenye nguvu, na TP mpya iliyohesabiwa (kwa mantiki ya SL/TP
 /// structure-aware) ni BORA zaidi kuliko TP ya sasa ya trade hii -
-/// panua TP, ndani ya server NA halisi upande wa Deriv.
+/// panua TP YA NDANI (hakuna 'contract_update' ya Deriv kwa CALL/PUT
+/// - ufuatiliaji wetu wa ndani NDIYO utakaotambua TP mpya).
 Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
   try {
     final freshAnalysis =
@@ -547,18 +534,9 @@ Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
     final oldTp = trade.tp;
     trade.tp = freshTp;
 
-    final updated = await DerivService.instance.updateContractSLTP(
-      trade.contractId,
-      newTakeProfitPrice: freshTp,
-      entryPrice: trade.entry,
-      stake: trade.stake,
-      multiplier: trade.multiplier,
-    );
-
     _trace(
-      "TP EXTENDED (soko bado ni zuri)",
-      "${trade.pair} ${trade.contractId}: $oldTp -> $freshTp "
-      "(Deriv update: ${updated ? 'IMEFANIKIWA' : 'IMESHINDWA'})",
+      "TP EXTENDED (soko bado ni zuri - NDANI TU, CALL/PUT haina TP ya asili)",
+      "${trade.pair} ${trade.contractId}: $oldTp -> $freshTp",
     );
   } catch (e) {
     _trace("TP EXTENSION ERROR", "${trade.contractId}: $e");
@@ -566,6 +544,11 @@ Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
 }
 
 /// ================= CLOSE =================
+// FIX: sasa inaita 'sellContract()' HALISI (kupitia
+// deriv.closeTradeById(), ambayo NAYO sasa imerekebishwa itumie
+// 'sell', si 'forget' - angalia maelezo marefu upande wa
+// deriv_service.dart) - kwa hiyo trade INAFUNGWA KWELI kwenye Deriv
+// sasa, si "kuachwa kufuatiliwa" tu kama ilivyokuwa awali.
 Future<void> _closeTrade(ActiveTrade trade, {required String reason}) async {
   if (trade.closed) return;
 
