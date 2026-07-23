@@ -350,6 +350,16 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
     );
 
     if (contractId == null) {
+      print(
+        "\n"
+        "❌❌❌ TRADE IMEKATALIWA NA DERIV ❌❌❌\n"
+        "   Alama       : $symbol (Deriv: $derivSymbol)\n"
+        "   Mwelekeo    : ${isBuy ? "BUY (CALL)" : "SELL (PUT)"}\n"
+        "   Stake iliyojaribiwa : \$${stake.toStringAsFixed(2)}\n"
+        "   Angalia print za '❌ Proposal error'/'❌ Buy error' hapo "
+        "juu kwa sababu HALISI ya kukataliwa.\n"
+        "=====================================\n",
+      );
       _trace("ERROR", "TRADE FAILED");
       return Response.json(body: {"error": "TRADE_FAILED"});
     }
@@ -375,11 +385,32 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
     TradeRegistry.instance.register(trade);
     _subscribeToTrade(trade);
 
+    // 🚨 ONGEZO JIPYA (kwa ombi la mtumiaji): print WAZI ya uthibitisho
+    // baada ya trade kukubaliwa - inaonyesha KWA UWAZI: imekubaliwa,
+    // stake kiasi gani, na SL/TP ZILIZOWEKWA (ambazo server hii
+    // YENYEWE itasimamia/itatekeleza, kwa kuwa CALL/PUT haina SL/TP
+    // asili upande wa Deriv - angalia maelezo kwenye deriv_service.dart).
+    print(
+      "\n"
+      "✅✅✅ TRADE IMEKUBALIWA NA DERIV ✅✅✅\n"
+      "   Contract ID : $contractId\n"
+      "   Alama       : $symbol (Deriv: $derivSymbol)\n"
+      "   Mwelekeo    : ${isBuy ? "BUY (CALL)" : "SELL (PUT)"}\n"
+      "   Stake       : \$${stake.toStringAsFixed(2)}\n"
+      "   Entry       : $entry\n"
+      "   SL iliyowekwa (server hii itasimamia) : $sl\n"
+      "   TP iliyowekwa (server hii itasimamia) : $tp\n"
+      "   Balance baada ya trade                : \$${CURRENT_BALANCE.toStringAsFixed(2)}\n"
+      "=====================================\n",
+    );
+
     return Response.json(body: {
       "status": "EXECUTED",
       "contractId": contractId,
       "symbol": symbol,
       "stake": stake,
+      "sl": sl,
+      "tp": tp,
       "balance": CURRENT_BALANCE,
     });
   } catch (e, st) {
@@ -510,6 +541,17 @@ void _subscribeToTrade(ActiveTrade trade) {
 /// structure-aware) ni BORA zaidi kuliko TP ya sasa ya trade hii -
 /// panua TP YA NDANI (hakuna 'contract_update' ya Deriv kwa CALL/PUT
 /// - ufuatiliaji wetu wa ndani NDIYO utakaotambua TP mpya).
+///
+/// 🔒 DHAMANA MUHIMU (kwa ombi la mtumiaji): TP HAIWEZI KAMWE
+/// KUPUNGUA (kurudi karibu na entry) - INAWEZA TU KUONGEZEKA (kuenda
+/// mbali zaidi, faida zaidi). Hii ni "ratchet" ya upande MMOJA TU -
+/// mara TP ikiongezwa, HAIREJEI NYUMA kamwe, hata kama uchambuzi wa
+/// baadaye ungependekeza TP ndogo zaidi. Angalia '_isTpImprovement()'
+/// hapa chini - ndiyo eneo PEKEE linaloamua kama kubadilisha TP au
+/// la, na masharti yake ni WAZI: BUY inahitaji freshTp KUBWA ZAIDI ya
+/// tp ya sasa; SELL inahitaji freshTp NDOGO ZAIDI ya tp ya sasa -
+/// HAKUNA njia nyingine ya kubadilisha 'trade.tp' popote kwenye
+/// mfumo huu.
 Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
   try {
     final freshAnalysis =
@@ -526,21 +568,37 @@ Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
 
     final freshTp = freshAnalysis.risk.takeProfit;
 
-    final improved =
-        trade.buy ? freshTp > trade.tp : freshTp < trade.tp;
+    // FIX (usalama wa ziada): kataa thamani za TP zisizo halali
+    // (sifuri/hasi) kabla ya kuzifikiria kabisa - ulinzi dhidi ya
+    // data mbovu ya uchambuzi kuharibu TP nzuri iliyopo tayari.
+    if (freshTp <= 0) return;
 
-    if (!improved) return;
+    if (!_isTpImprovement(trade, freshTp)) return;
 
     final oldTp = trade.tp;
     trade.tp = freshTp;
 
     _trace(
       "TP EXTENDED (soko bado ni zuri - NDANI TU, CALL/PUT haina TP ya asili)",
-      "${trade.pair} ${trade.contractId}: $oldTp -> $freshTp",
+      "${trade.pair} ${trade.contractId}: $oldTp -> $freshTp "
+      "(TP HAITAWAHI kupungua chini ya thamani hii tena)",
     );
   } catch (e) {
     _trace("TP EXTENSION ERROR", "${trade.contractId}: $e");
   }
+}
+
+/// 🔒 Kazi PEKEE inayoamua kama TP mpya ni "bora zaidi" - ndiyo
+/// "geti" pekee linaloruhusu 'trade.tp' kubadilika. Kanuni ni WAZI na
+/// ya upande MMOJA TU (ratchet):
+///   - BUY: TP mpya lazima iwe KUBWA ZAIDI (mbali zaidi juu) kuliko
+///     TP ya sasa - vinginevyo HAPANA.
+///   - SELL: TP mpya lazima iwe NDOGO ZAIDI (mbali zaidi chini)
+///     kuliko TP ya sasa - vinginevyo HAPANA.
+/// Kwa njia hii, TP HAIWEZI KAMWE kusogea karibu na entry tena mara
+/// ikishasogea mbali - inaweza TU kuendelea kusogea mbali zaidi.
+bool _isTpImprovement(ActiveTrade trade, double freshTp) {
+  return trade.buy ? freshTp > trade.tp : freshTp < trade.tp;
 }
 
 /// ================= CLOSE =================
