@@ -22,7 +22,6 @@ const String derivToken =
 // app_id"). Kwa matumizi ya kudumu/uzalishaji na token ya kibinafsi,
 // SAJILI APP_ID YAKO MWENYEWE kupitia https://api.deriv.com (au
 // developers.deriv.com/docs/app-registration - "Register
-// Application"), kisha BADILISHA NAMBA HII kwa app_id yako halisi.
 //
 // FIX (aina ya data): 'derivAppId' sasa ni String (si int) - Deriv
 // imebadilisha muundo wa App ID kwa usajili mpya (sasa ni
@@ -826,11 +825,29 @@ Future<String?> placeTrade(
 
   try {
 
+    // 🚨🚨🚨 FIX YA BUG HATARI (race condition iliyogunduliwa kupitia
+    // uchunguzi wa logi halisi): awali listener za 'proposal'/'buy'
+    // zilikuwa zikikubali JIBU LOLOTE lenye 'msg_type' inayolingana -
+    // BILA kuthibitisha kwamba jibu hilo ni la OMBI HILI MAALUM. Kama
+    // maombi MAWILI ya trade yakitokea KARIBU WAKATI MMOJA (mf.
+    // auto-trade + kitufe cha mkono, au auto-trades mbili za alama
+    // tofauti karibu wakati mmoja), kila listener ingeweza "kunyakua"
+    // jibu la OMBI TOFAUTI - ikisababisha data iliyochanganyika (mf.
+    // "hakuna 'id' kwenye jibu" - kwa sababu proposal ya alama A
+    // ilijaribu kusoma jibu la proposal ya alama B). Sasa kila ombi
+    // lina 'req_id' ya KIPEKEE, na listener inakataa (inapuuza) jibu
+    // lolote lisilo na 'req_id' inayolingana KABISA na hili ombi.
+    final proposalReqId = DateTime.now().microsecondsSinceEpoch;
+
     // 1. GET PROPOSAL
     final proposalCompleter = Completer<Map<String, dynamic>>();
     late StreamSubscription proposalSub;
 
     proposalSub = stream.listen((event) {
+      // FIX: kataa jibu lolote lisilo na 'req_id' inayolingana KABISA
+      // na ombi hili - hata kama 'msg_type' inalingana.
+      if (event["req_id"] != proposalReqId) return;
+
       if (event["msg_type"] == "proposal") {
         if (!proposalCompleter.isCompleted) {
           proposalCompleter.complete(event);
@@ -857,6 +874,7 @@ Future<String?> placeTrade(
       "underlying_symbol": pair,
       "duration": durationMinutes,
       "duration_unit": "m",
+      "req_id": proposalReqId,
     });
 
     final proposal = await proposalCompleter.future.timeout(
@@ -878,15 +896,27 @@ Future<String?> placeTrade(
     // inayohakikishwa kuwepo kwenye jibu jipya - fields nyingine
     // (ask_price, payout, spot) zinaweza zisiwepo kila wakati.
     if (p == null || p["id"] == null) {
-      print("❌ Proposal failed ($symbol) - hakuna 'id' kwenye jibu kutoka Deriv.");
+      print(
+        "❌ Proposal failed ($symbol) - hakuna 'id' kwenye jibu kutoka "
+        "Deriv. (req_id=$proposalReqId - kama umeona hili awali kwa "
+        "sababu ya 'race condition', fix ya req_id hapo juu inapaswa "
+        "kuwa imelitatua sasa; kama bado linatokea, ni tatizo LINGINE "
+        "kabisa la ombi hili - angalia raw response.)",
+      );
       return null;
     }
+
+    // ONGEZO JIPYA: req_id TOFAUTI kwa ombi la 'buy' (ombi jipya kabisa
+    // - haliwezi kutumia ile ile ya 'proposal').
+    final buyReqId = DateTime.now().microsecondsSinceEpoch;
 
     // 2. BUY CONTRACT
     final buyCompleter = Completer<Map<String, dynamic>>();
     late StreamSubscription buySub;
 
     buySub = stream.listen((event) {
+      if (event["req_id"] != buyReqId) return;
+
       if (event["msg_type"] == "buy") {
         if (!buyCompleter.isCompleted) {
           buyCompleter.complete(event);
@@ -903,6 +933,7 @@ Future<String?> placeTrade(
     _send({
       "buy": p["id"],
       "price": p["ask_price"] ?? stake,
+      "req_id": buyReqId,
     });
 
     final buy = await buyCompleter.future.timeout(
@@ -951,10 +982,17 @@ Future<String?> placeTrade(
 // market_analysis_service.dart.
 Future<bool> sellContract(String contractId, {double price = 0}) async {
   try {
+    // FIX (req_id - uwiano wa kudumu na placeTrade()): angalia
+    // maelezo marefu kwenye placeTrade() kuhusu race condition
+    // iliyogunduliwa - fix ile ile inatumika hapa.
+    final sellReqId = DateTime.now().microsecondsSinceEpoch;
+
     final completer = Completer<Map<String, dynamic>>();
     late StreamSubscription sub;
 
     sub = stream.listen((event) {
+      if (event["req_id"] != sellReqId) return;
+
       if (event["msg_type"] == "sell") {
         if (!completer.isCompleted) completer.complete(event);
         sub.cancel();
@@ -969,6 +1007,7 @@ Future<bool> sellContract(String contractId, {double price = 0}) async {
     _send({
       "sell": contractIdInt ?? contractId,
       "price": price,
+      "req_id": sellReqId,
     });
 
     final result = await completer.future.timeout(
