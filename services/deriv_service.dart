@@ -22,6 +22,7 @@ const String derivToken =
 // app_id"). Kwa matumizi ya kudumu/uzalishaji na token ya kibinafsi,
 // SAJILI APP_ID YAKO MWENYEWE kupitia https://api.deriv.com (au
 // developers.deriv.com/docs/app-registration - "Register
+// Application"), kisha BADILISHA NAMBA HII kwa app_id yako halisi.
 //
 // FIX (aina ya data): 'derivAppId' sasa ni String (si int) - Deriv
 // imebadilisha muundo wa App ID kwa usajili mpya (sasa ni
