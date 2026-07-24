@@ -666,6 +666,14 @@ double _riskPercentFor(double confidence) {
   return 0.5; // bado imepita MIN_CONFIDENCE, lakini ni dhaifu zaidi
 }
 
+// 🚨 ONGEZO JIPYA (kwa ombi la mtumiaji + uthibitisho wa logi halisi):
+// Deriv ina KIWANGO CHA CHINI cha 'stake' (kwa uzoefu, chini ya $1
+// mara nyingi inakataliwa - tulithibitisha hili moja kwa moja:
+// stake=$0.83 ilikataliwa na Deriv, ikitoa "hakuna 'id' kwenye jibu").
+// Sasa stake HAIWEZI KAMWE kuwa chini ya $1, hata kama hesabu ya
+// risk-based ingetoa namba ndogo zaidi.
+const double MIN_STAKE = 1.0;
+
 double _calculateStake({
   required double confidence,
   required double balance,
@@ -679,8 +687,9 @@ double _calculateStake({
   final stopDistance = (entry - stopLoss).abs();
 
   if (entry <= 0 || stopDistance <= 0) {
-    // Salama: stake ndogo ya default badala ya kugawa kwa sifuri.
-    return balance * 0.005;
+    // Salama: stake ndogo ya default badala ya kugawa kwa sifuri -
+    // bado inaheshimu MIN_STAKE.
+    return MIN_STAKE;
   }
 
   final slPercent = stopDistance / entry;
@@ -692,5 +701,15 @@ double _calculateStake({
   // ikilinganishwa na bei ikitoa namba isiyo ya busara).
   final maxStake = balance * (MAX_STAKE_PERCENT_OF_BALANCE / 100);
 
-  return rawStake > maxStake ? maxStake : rawStake;
+  final bounded = rawStake > maxStake ? maxStake : rawStake;
+
+  // ⚠️ KUMBUKA MUHIMU: kulazimisha MIN_STAKE ($1) kunaweza wakati
+  // mwingine kumaanisha hatari HALISI (dollar) inayochukuliwa ni
+  // KUBWA ZAIDI ya asilimia iliyokusudiwa (mf. kwenye balance ndogo
+  // sana kama $20, $1 ni 5% - zaidi ya risk% ya kawaida ya 0.5-1.5%).
+  // Hii ni MADHARA YASIYOEPUKIKA ya kuwa na balance ndogo pamoja na
+  // kiwango cha chini cha Deriv - si bug, ni ukweli wa kihesabu.
+  // Ukiona hili likikusumbua, suluhisho pekee halisi ni balance kubwa
+  // zaidi ya akaunti.
+  return bounded < MIN_STAKE ? MIN_STAKE : bounded;
 }
