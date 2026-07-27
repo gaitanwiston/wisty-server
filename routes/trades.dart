@@ -614,13 +614,34 @@ bool _isTpImprovement(ActiveTrade trade, double freshTp) {
 Future<void> _closeTrade(ActiveTrade trade, {required String reason}) async {
   if (trade.closed) return;
 
-  trade.closed = true;
+  // 🚨 FIX (bug halisi): awali 'trade.closed=true' ilikuwa ikiwekwa
+  // KABLA ya kujaribu kufunga, na trade ilikuwa ikiondolewa kwenye
+  // TradeRegistry HATA KAMA 'closeTradeById()' ilishindwa (matokeo
+  // yalikuwa yakipuuzwa - 'Future<void>' ya zamani). Hii ilimaanisha
+  // kama Deriv ingekataa ombi la kuuza, TUNGEPOTEZA UFUATILIAJI wa
+  // position ambayo BADO IKO WAZI kwenye Deriv - hatari kubwa. Sasa
+  // tunathibitisha MAFANIKIO KWANZA - trade.closed inabaki 'false'
+  // (na TradeRegistry haiondolewi) endapo kufunga kunashindwa, ili
+  // 'tick' inayofuata ijaribu tena kiotomatiki.
+  bool closed = false;
 
   try {
-    await DerivService.instance.closeTradeById(trade.contractId);
+    closed = await DerivService.instance.closeTradeById(trade.contractId);
   } catch (e) {
     _trace("CLOSE ERROR", e);
   }
+
+  if (!closed) {
+    _trace(
+      "CLOSE FAILED (itajaribiwa tena)",
+      "${trade.contractId} - Deriv ilikataa/ilishindwa kufunga - "
+      "'tick' inayofuata itajaribu tena kiotomatiki. Position BADO "
+      "IKO WAZI kwenye Deriv.",
+    );
+    return;
+  }
+
+  trade.closed = true;
 
   TradeRegistry.instance.remove(trade.contractId);
 

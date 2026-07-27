@@ -57,9 +57,31 @@ Future<Response> onRequest(RequestContext context) async {
   }
 
   try {
-    trade.closed = true;
+    // 🚨 FIX (bug halisi): awali 'trade.closed=true' ilikuwa
+    // ikiwekwa NA trade ikiondolewa kwenye TradeRegistry HATA KAMA
+    // 'closeTradeById()' ilishindwa (matokeo yake yalikuwa
+    // yakipuuzwa kabisa - 'Future<void>' ya zamani). Sasa
+    // 'closeTradeById()' inarudisha 'bool' HALISI - tunaithibitisha
+    // KWANZA kabla ya kubadilisha hali ya trade.
+    final closed = await DerivService.instance.closeTradeById(contractId);
 
-    await DerivService.instance.closeTradeById(contractId);
+    if (!closed) {
+      print("❌ CLOSE TRADE FAILED (Deriv ilikataa): $contractId");
+
+      return Response.json(
+        statusCode: 500,
+        body: {
+          "success": false,
+          "error": "SELL_FAILED",
+          "message":
+              "Deriv ilikataa ombi la kuuza contract - angalia console "
+              "ya server kwa maelezo kamili ya sababu (❌ sellContract "
+              "error / 🔬 RAW sell response).",
+        },
+      );
+    }
+
+    trade.closed = true;
 
     TradeRegistry.instance.remove(contractId);
 

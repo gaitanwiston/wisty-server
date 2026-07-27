@@ -1060,41 +1060,57 @@ Future<bool> sellContract(String contractId, {double price = 0}) async {
     sub = stream.listen((event) {
       if (event["req_id"] != sellReqId) return;
 
-      if (event["msg_type"] == "sell") {
-        if (!completer.isCompleted) completer.complete(event);
-        sub.cancel();
-      } else if (event["msg_type"] == "error") {
-        if (!completer.isCompleted) completer.complete(event);
-        sub.cancel();
-      }
+      // FIX: kubali JIBU LOLOTE lenye 'req_id' inayolingana - bila
+      // kujali 'msg_type' (inaweza kuwa "sell" HATA kwa hitilafu,
+      // sawa na "proposal"/"authorize"/"balance").
+      if (!completer.isCompleted) completer.complete(event);
+      sub.cancel();
     });
 
     final contractIdInt = int.tryParse(contractId);
 
-    _send({
+    final sellRequest = {
       "sell": contractIdInt ?? contractId,
       "price": price,
       "req_id": sellReqId,
-    });
+    };
+
+    print("[SERVER2-TRACE] 📋 Sell request ($contractId): $sellRequest");
+
+    _send(sellRequest);
 
     final result = await completer.future.timeout(
       const Duration(seconds: 10),
       onTimeout: () => <String, dynamic>{},
     );
 
-    if (result["msg_type"] == "error") {
+    if (result.isEmpty) {
       print(
-        "❌ sellContract error ($contractId): "
-        "${result["error"]?["message"] ?? result["error"]}",
+        "[SERVER2-TRACE] ❌ sellContract timeout ($contractId) - hakuna "
+        "jibu kutoka Deriv ndani ya sekunde 10.",
       );
       return false;
     }
 
-    print("🔴 CONTRACT SOLD (mkono - SL/TP ya ndani) $contractId");
+    // 🚨 FIX YA BUG ILE ILE (msg_type SI "error" kamwe - error field
+    // inajificha ndani ya jibu lenye msg_type:"sell"): tunakagua UWEPO
+    // WA 'error' field moja kwa moja, si 'msg_type'.
+    final sellError = result["error"];
+
+    if (sellError != null) {
+      print(
+        "[SERVER2-TRACE] ❌ sellContract error ($contractId): "
+        "code=${sellError["code"]} message=${sellError["message"]}",
+      );
+      print("[SERVER2-TRACE] 🔬 RAW sell response ($contractId): $result");
+      return false;
+    }
+
+    print("[SERVER2-TRACE] 🔴 CONTRACT SOLD (mkono - SL/TP ya ndani) $contractId");
 
     return true;
   } catch (e) {
-    print("❌ sellContract error ($contractId): $e");
+    print("[SERVER2-TRACE] ❌ sellContract error ($contractId): $e");
     return false;
   }
 }
@@ -2363,11 +2379,15 @@ List<model.Candle> _aggregateCalendar(
   // kimya, tukidhani tumezifunga. Sasa inatumia '{"sell": id}' HALISI
   // (kupitia sellContract() - angalia hapo juu) - amri sahihi ya
   // Deriv ya kufunga contract.
-  Future<void> closeTradeById(
+  // FIX (ONGEZO): sasa inarudisha 'bool' HALISI ya matokeo (badala ya
+  // 'void' iliyokuwa ikipuuza kabisa kama sellContract() ilifanikiwa
+  // au la) - callers (mf. trades.dart, routes/close.dart) sasa
+  // wanaweza kujua KWA UHAKIKA kama trade ilifungwa kweli.
+  Future<bool> closeTradeById(
       String id,
   ) async {
 
-    await sellContract(id);
+    return await sellContract(id);
 
   }
 
