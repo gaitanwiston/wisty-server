@@ -965,11 +965,15 @@ Future<String?> placeTrade(
     if (p == null || p["id"] == null) {
       print(
         "❌ Proposal failed ($symbol) - hakuna 'id' kwenye jibu kutoka "
-        "Deriv. (req_id=$proposalReqId - kama umeona hili awali kwa "
-        "sababu ya 'race condition', fix ya req_id hapo juu inapaswa "
-        "kuwa imelitatua sasa; kama bado linatokea, ni tatizo LINGINE "
-        "kabisa la ombi hili - angalia raw response.)",
+        "Deriv. (req_id=$proposalReqId)",
       );
+      // 🔍 ONGEZO JIPYA (diagnostic ya mwisho): chapisha JIBU LOTE
+      // GHAFI (raw) la Deriv - hii itatuonyesha muundo HALISI wa
+      // jibu, ikiwa 'id' iko mahali pengine (si
+      // proposal["proposal"]["id"]) kwa sababu ya jina la field
+      // kubadilika (sawa na "symbol"->"underlying_symbol"
+      // tuliyoigundua awali).
+      print("🔬 RAW proposal response ($symbol): $proposal");
       return null;
     }
 
