@@ -862,21 +862,28 @@ Future<String?> placeTrade(
       }
     });
 
-    _send({
+    // 🚨 FIX (uwezekano mkubwa wa chanzo cha kushindwa kwa haraka
+    // sana - milisekunde 1-2 tu, haraka mno kuwa mawasiliano halisi
+    // na Deriv): '1440m' (dakika 1440 = siku 1, ikitumia unit ya
+    // "m") huenda si muundo unaokubalika kwa alama nyingi - Deriv
+    // mara nyingi ina masharti tofauti kuhusu unit gani inatumika kwa
+    // muda mrefu (h/d badala ya m). Sasa tunatumia MASAA (h) kama
+    // default - muundo unaokubalika zaidi kwa muda mrefu.
+    final proposalRequest = {
       "proposal": 1,
       "amount": stake,
       "basis": "stake",
       "contract_type": isBuy ? "CALL" : "PUT",
       "currency": "USD",
-      // FIX (jina jipya la field - Options API "Proposal Comparison"):
-      // 'underlying_symbol' badala ya 'symbol' ya zamani. Tunatumia
-      // 'pair' (jina halisi la Deriv), si 'symbol' (UPPERCASE) - bug
-      // ile ile ya casing iliyofanywa mahali pengine kwenye faili hii.
       "underlying_symbol": pair,
-      "duration": durationMinutes,
-      "duration_unit": "m",
+      "duration": (durationMinutes / 60).ceil(),
+      "duration_unit": "h",
       "req_id": proposalReqId,
-    });
+    };
+
+    print("📋 Proposal request ($symbol): $proposalRequest");
+
+    _send(proposalRequest);
 
     final proposal = await proposalCompleter.future.timeout(
       const Duration(seconds: 10),
@@ -884,11 +891,70 @@ Future<String?> placeTrade(
     );
 
     if (proposal["msg_type"] == "error") {
-      print(
-        "❌ Proposal error ($symbol): "
-        "${proposal["error"]?["message"] ?? proposal["error"]}",
+      final errMsg =
+          proposal["error"]?["message"] ?? proposal["error"];
+
+      print("❌ Proposal error ($symbol): $errMsg");
+
+      // 🚨 ONGEZO JIPYA (fallback ya kudumu): kama muda mrefu (masaa)
+      // haukubaliki kwa alama hii mahususi, jaribu MARA MOJA TENA na
+      // muda MFUPI, wa kawaida zaidi na unaokubalika karibu kila
+      // mahali (dakika 5) - bora trade ifunguliwe na muda mfupi
+      // zaidi kuliko isifunguliwe kabisa. SL/TP zetu za ndani bado
+      // zitajaribu kufunga mapema - lakini kwa muda mfupi namna hii,
+      // kuna uwezekano contract itaisha yenyewe (win/lose kiasili)
+      // KABLA SL/TP kufikiwa kwa baadhi ya setups za "swing" za muda
+      // mrefu - hii ni MADHARA YANAYOJULIKANA ya fallback hii, si
+      // suluhisho kamili.
+      print("🔁 Proposal fallback: kujaribu tena na muda mfupi (dakika 5)...");
+
+      final fallbackReqId = DateTime.now().microsecondsSinceEpoch;
+      final fallbackCompleter = Completer<Map<String, dynamic>>();
+      late StreamSubscription fallbackSub;
+
+      fallbackSub = stream.listen((event) {
+        if (event["req_id"] != fallbackReqId) return;
+        if (event["msg_type"] == "proposal" || event["msg_type"] == "error") {
+          if (!fallbackCompleter.isCompleted) {
+            fallbackCompleter.complete(event);
+          }
+          fallbackSub.cancel();
+        }
+      });
+
+      _send({
+        "proposal": 1,
+        "amount": stake,
+        "basis": "stake",
+        "contract_type": isBuy ? "CALL" : "PUT",
+        "currency": "USD",
+        "underlying_symbol": pair,
+        "duration": 5,
+        "duration_unit": "m",
+        "req_id": fallbackReqId,
+      });
+
+      final fallbackProposal = await fallbackCompleter.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => <String, dynamic>{},
       );
-      return null;
+
+      if (fallbackProposal["msg_type"] == "error") {
+        print(
+          "❌ Proposal fallback ($symbol) NAYO imeshindwa: "
+          "${fallbackProposal["error"]?["message"] ?? fallbackProposal["error"]}",
+        );
+        return null;
+      }
+
+      final fallbackP = fallbackProposal["proposal"];
+
+      if (fallbackP == null || fallbackP["id"] == null) {
+        print("❌ Proposal fallback ($symbol) - hakuna 'id' kwenye jibu.");
+        return null;
+      }
+
+      return _buyFromProposal(fallbackP, symbol, isBuy: isBuy, stake: stake);
     }
 
     final p = proposal["proposal"];
@@ -907,62 +973,7 @@ Future<String?> placeTrade(
       return null;
     }
 
-    // ONGEZO JIPYA: req_id TOFAUTI kwa ombi la 'buy' (ombi jipya kabisa
-    // - haliwezi kutumia ile ile ya 'proposal').
-    final buyReqId = DateTime.now().microsecondsSinceEpoch;
-
-    // 2. BUY CONTRACT
-    final buyCompleter = Completer<Map<String, dynamic>>();
-    late StreamSubscription buySub;
-
-    buySub = stream.listen((event) {
-      if (event["req_id"] != buyReqId) return;
-
-      if (event["msg_type"] == "buy") {
-        if (!buyCompleter.isCompleted) {
-          buyCompleter.complete(event);
-        }
-        buySub.cancel();
-      } else if (event["msg_type"] == "error") {
-        if (!buyCompleter.isCompleted) {
-          buyCompleter.complete(event);
-        }
-        buySub.cancel();
-      }
-    });
-
-    _send({
-      "buy": p["id"],
-      "price": p["ask_price"] ?? stake,
-      "req_id": buyReqId,
-    });
-
-    final buy = await buyCompleter.future.timeout(
-      const Duration(seconds: 10),
-      onTimeout: () => <String, dynamic>{},
-    );
-
-    if (buy["msg_type"] == "error") {
-      print(
-        "❌ Buy error ($symbol): "
-        "${buy["error"]?["message"] ?? buy["error"]}",
-      );
-      return null;
-    }
-
-    final contractId = buy["buy"]?["contract_id"]?.toString();
-
-    if (contractId != null) {
-      print(
-        "✅ TRADE OPENED (CALL/PUT - Options API) $symbol ID:$contractId "
-        "(${isBuy ? "CALL" : "PUT"}, wavu wa usalama: "
-        "${durationMinutes}min) - SL/TP HALISI zinasimamiwa na "
-        "trades.dart (server 2), SI Deriv (CALL/PUT haina limit_order "
-        "asili).",
-      );
-    }
-
-    return contractId;
+    return _buyFromProposal(p, symbol, isBuy: isBuy, stake: stake);
 
   } catch (e) {
 
@@ -976,11 +987,74 @@ Future<String?> placeTrade(
 
 }
 
-// ONGEZO JIPYA: kufunga contract KABLA ya muda wake wa asili
-// (durationMinutes) kuisha - hii ndiyo njia HALISI ya "SL/TP" kwa
-// CALL/PUT (ambazo hazina limit_order asili). 'trades.dart' inaita
-// hii mara bei inapofika SL/TP zetu za ndani zilizohesabiwa na
-// market_analysis_service.dart.
+// ONGEZO JIPYA: kazi ya msaidizi iliyotolewa (extracted) kutoka
+// placeTrade() - inashughulikia hatua ya "buy" (baada ya proposal
+// kufanikiwa) - inatumika NA njia kuu (muda mrefu/saa) NA njia ya
+// fallback (muda mfupi/dakika 5, endapo muda mrefu haukukubaliwa na
+// Deriv kwa alama hii mahususi).
+Future<String?> _buyFromProposal(
+  Map<String, dynamic> p,
+  String symbol, {
+  required bool isBuy,
+  required double stake,
+}) async {
+  final buyReqId = DateTime.now().microsecondsSinceEpoch;
+
+  final buyCompleter = Completer<Map<String, dynamic>>();
+  late StreamSubscription buySub;
+
+  buySub = stream.listen((event) {
+    if (event["req_id"] != buyReqId) return;
+
+    if (event["msg_type"] == "buy") {
+      if (!buyCompleter.isCompleted) {
+        buyCompleter.complete(event);
+      }
+      buySub.cancel();
+    } else if (event["msg_type"] == "error") {
+      if (!buyCompleter.isCompleted) {
+        buyCompleter.complete(event);
+      }
+      buySub.cancel();
+    }
+  });
+
+  _send({
+    "buy": p["id"],
+    "price": p["ask_price"] ?? stake,
+    "req_id": buyReqId,
+  });
+
+  final buy = await buyCompleter.future.timeout(
+    const Duration(seconds: 10),
+    onTimeout: () => <String, dynamic>{},
+  );
+
+  if (buy["msg_type"] == "error") {
+    print(
+      "❌ Buy error ($symbol): "
+      "${buy["error"]?["message"] ?? buy["error"]}",
+    );
+    return null;
+  }
+
+  final contractId = buy["buy"]?["contract_id"]?.toString();
+
+  if (contractId != null) {
+    print(
+      "✅ TRADE OPENED (CALL/PUT - Options API) $symbol ID:$contractId "
+      "(${isBuy ? "CALL" : "PUT"}) - SL/TP HALISI zinasimamiwa na "
+      "trades.dart (server 2), SI Deriv (CALL/PUT haina limit_order "
+      "asili).",
+    );
+  } else {
+    print("❌ Buy failed ($symbol) - hakuna 'contract_id' kwenye jibu.");
+  }
+
+  return contractId;
+}
+
+
 Future<bool> sellContract(String contractId, {double price = 0}) async {
   try {
     // FIX (req_id - uwiano wa kudumu na placeTrade()): angalia
