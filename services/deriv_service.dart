@@ -877,6 +877,15 @@ Future<PlaceTradeResult> placeTrade(
 
   final symbol = normalizeSymbol(pair);
 
+  // 🚨 FIX (hitilafu mpya iliyogunduliwa - Deriv inakataa stake yenye
+  // desimali zaidi ya 2, kwa kuwa ni kiasi cha fedha halisi, mf.
+  // 175.4724752320328 -> 175.47 TU): tunarunda (round) stake HAPA
+  // MARA MOJA, mwanzoni kabisa - kabla haijatumika popote (ombi la
+  // Deriv, print za logi, au thamani inayorudishwa) - ili KILA
+  // mahali kwenye kazi hii kuone/kutumia HIYO HIYO thamani sahihi
+  // iliyorundwa.
+  stake = double.parse(stake.toStringAsFixed(2));
+
   try {
 
     // 🚨 FIX YA BUG HATARI (race condition): kila ombi lina 'req_id'

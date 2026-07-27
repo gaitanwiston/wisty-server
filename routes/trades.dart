@@ -762,7 +762,9 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
         if (maxPayout != null && currentPayout != null && currentPayout > 0) {
           // Uwiano wa 90% ya kikomo - nafasi ndogo ya usalama.
           final scaleFactor = (maxPayout / currentPayout) * 0.9;
-          var newStake = currentStake * scaleFactor;
+          var newStake = double.parse(
+            (currentStake * scaleFactor).toStringAsFixed(2),
+          );
 
           // FIX: HESHIMU MAX_STAKE_PERCENT_OF_BALANCE na MIN_STAKE
           // HATA baada ya kupunguzwa kwa sababu ya kikomo cha
@@ -863,5 +865,11 @@ double _calculateStake({
   // kiwango cha chini cha Deriv - si bug, ni ukweli wa kihesabu.
   // Ukiona hili likikusumbua, suluhisho pekee halisi ni balance kubwa
   // zaidi ya akaunti.
-  return bounded < MIN_STAKE ? MIN_STAKE : bounded;
+  final finalValue = bounded < MIN_STAKE ? MIN_STAKE : bounded;
+
+  // FIX (uwiano na deriv_service.dart - Deriv inakataa stake yenye
+  // desimali zaidi ya 2): rounding hapa pia inahakikisha thamani
+  // zinazoripotiwa (ActiveTrade, _trace(), n.k.) ni safi/sahihi
+  // tangu mwanzo, hata kabla ya kufika deriv_service.dart.
+  return double.parse(finalValue.toStringAsFixed(2));
 }
