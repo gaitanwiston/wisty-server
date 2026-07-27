@@ -74,6 +74,58 @@ class _LiveSub {
 }
 
 
+// =====================================================================
+// ONGEZO JIPYA: MUUNDO WA MATOKEO YA placeTrade() (kwa ombi la
+// mtumiaji - "uamuzi wa stake mpya unapaswa kuwa trades.dart pekee")
+// =====================================================================
+//
+// Awali placeTrade() ilikuwa ikifanya MAAMUZI YA HATARI (kupunguza
+// stake, kubadilisha muda) YENYEWE ndani ya deriv_service.dart -
+// jambo lililochanganya "wajibu" (deriv_service.dart inapaswa
+// kuwasiliana na Deriv TU, si kufanya maamuzi ya usimamizi wa
+// hatari - hilo ni kazi ya trades.dart, "master of psychology").
+//
+// Sasa placeTrade() ni JARIBIO MOJA TU - ikishindwa, inarudisha
+// PlaceTradeResult yenye TAARIFA KAMILI za hitilafu (code, subcode,
+// message, code_args) - trades.dart NDIYO inayoamua (na kuhesabu)
+// stake/muda mpya wa kujaribu tena, kisha kuita placeTrade() TENA
+// yenyewe.
+
+class PlaceTradeError {
+  final String? code;
+  final String? subcode;
+  final String message;
+  final List<dynamic>? codeArgs;
+
+  PlaceTradeError({
+    this.code,
+    this.subcode,
+    required this.message,
+    this.codeArgs,
+  });
+
+  @override
+  String toString() =>
+      "PlaceTradeError(code=$code, subcode=$subcode, message=$message, "
+      "codeArgs=$codeArgs)";
+}
+
+class PlaceTradeResult {
+  final String? contractId;
+  final PlaceTradeError? error;
+
+  PlaceTradeResult({this.contractId, this.error});
+
+  bool get success => contractId != null;
+
+  factory PlaceTradeResult.ok(String contractId) =>
+      PlaceTradeResult(contractId: contractId);
+
+  factory PlaceTradeResult.fail(PlaceTradeError error) =>
+      PlaceTradeResult(error: error);
+}
+
+
 class DerivService {
 
   static final DerivService instance =
@@ -811,57 +863,6 @@ class DerivService {
 // ⚠️ MABADILIKO MENGINE MUHIMU (kutoka "Proposal Comparison" - nyaraka
 // rasmi za Deriv): field 'symbol' imebadilishwa jina kuwa
 // 'underlying_symbol' kwenye ombi la 'proposal'.
-// =====================================================================
-// ONGEZO JIPYA: MUUNDO WA MATOKEO YA placeTrade() (kwa ombi la
-// mtumiaji - "uamuzi wa stake mpya unapaswa kuwa trades.dart pekee")
-// =====================================================================
-//
-// Awali placeTrade() ilikuwa ikifanya MAAMUZI YA HATARI (kupunguza
-// stake, kubadilisha muda) YENYEWE ndani ya deriv_service.dart -
-// jambo lililochanganya "wajibu" (deriv_service.dart inapaswa
-// kuwasiliana na Deriv TU, si kufanya maamuzi ya usimamizi wa
-// hatari - hilo ni kazi ya trades.dart, "master of psychology").
-//
-// Sasa placeTrade() ni JARIBIO MOJA TU - ikishindwa, inarudisha
-// PlaceTradeResult yenye TAARIFA KAMILI za hitilafu (code, subcode,
-// message, code_args) - trades.dart NDIYO inayoamua (na kuhesabu)
-// stake/muda mpya wa kujaribu tena, kisha kuita placeTrade() TENA
-// yenyewe.
-
-class PlaceTradeError {
-  final String? code;
-  final String? subcode;
-  final String message;
-  final List<dynamic>? codeArgs;
-
-  PlaceTradeError({
-    this.code,
-    this.subcode,
-    required this.message,
-    this.codeArgs,
-  });
-
-  @override
-  String toString() =>
-      "PlaceTradeError(code=$code, subcode=$subcode, message=$message, "
-      "codeArgs=$codeArgs)";
-}
-
-class PlaceTradeResult {
-  final String? contractId;
-  final PlaceTradeError? error;
-
-  PlaceTradeResult({this.contractId, this.error});
-
-  bool get success => contractId != null;
-
-  factory PlaceTradeResult.ok(String contractId) =>
-      PlaceTradeResult(contractId: contractId);
-
-  factory PlaceTradeResult.fail(PlaceTradeError error) =>
-      PlaceTradeResult(error: error);
-}
-
 // ONGEZO JIPYA: 'placeTrade()' sasa ni JARIBIO MOJA TU (single-shot) -
 // 'durationValue'/'durationUnit' ni PARAMETA WAZI (si zilizowekwa
 // ndani kimya kimya) - 'trades.dart' inaamua ni muda gani wa kutumia
