@@ -331,38 +331,42 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       "balance": CURRENT_BALANCE,
     });
 
-    // 🚨 FIX (usalama mkubwa sana): sasa tunapitisha entry/SL/TP kwa
-    // placeTrade() ili DERIV YENYEWE itekeleze 'limit_order' (SL/TP
-    // halisi upande wa broker). Awali haya HAYAKUWA yakipitishwa
-    // KABISA - trade zilikuwa zikifunguliwa BILA ULINZI WOWOTE wa
-    // SL/TP upande wa Deriv, zikitegemea TU ufuatiliaji wa bei wa
-    // ndani ya server hii (_subscribeToTrade chini) - hatari kubwa
-    // endapo server hii ingeanguka/kukatika wakati position ikiwa
-    // wazi (position ingebaki bila ulinzi WOWOTE).
-    final contractId = await deriv.placeTrade(
-      derivSymbol,
-      isBuy,
-      stake: stake,
-      entryPrice: entry,
-      stopLossPrice: sl,
-      takeProfitPrice: tp,
-      multiplier: DEFAULT_MULTIPLIER,
+    // 🚨 MABADILIKO MAKUBWA (usanifu safi zaidi - kwa ombi la
+    // mtumiaji): placeTrade() sasa ni JARIBIO MOJA TU (single-shot),
+    // ikirudisha PlaceTradeResult yenye taarifa KAMILI za hitilafu
+    // (si contractId==null tu). trades.dart (HII HAPA) NDIYO
+    // ANAYEAMUA sasa jinsi ya kujaribu tena (stake mpya, muda mpya) -
+    // SI deriv_service.dart. Angalia _placeTradeWithRetries() chini -
+    // ndipo mantiki yote ya "jaribu tena" ilipo sasa, ikiheshimu
+    // MAX_STAKE_PERCENT_OF_BALANCE na MIN_STAKE muda wote.
+    final result = await _placeTradeWithRetries(
+      derivSymbol: derivSymbol,
+      symbol: symbol,
+      isBuy: isBuy,
+      initialStake: stake,
+      balance: CURRENT_BALANCE,
     );
 
-    if (contractId == null) {
+    if (!result.success) {
       print(
         "\n"
         "❌❌❌ TRADE IMEKATALIWA NA DERIV ❌❌❌\n"
         "   Alama       : $symbol (Deriv: $derivSymbol)\n"
         "   Mwelekeo    : ${isBuy ? "BUY (CALL)" : "SELL (PUT)"}\n"
-        "   Stake iliyojaribiwa : \$${stake.toStringAsFixed(2)}\n"
-        "   Angalia print za '❌ Proposal error'/'❌ Buy error' hapo "
-        "juu kwa sababu HALISI ya kukataliwa.\n"
+        "   Stake iliyojaribiwa (ya mwisho) : \$${result.finalStake.toStringAsFixed(2)}\n"
+        "   Sababu HALISI : ${result.error?.message}\n"
+        "   (code=${result.error?.code}, subcode=${result.error?.subcode})\n"
         "=====================================\n",
       );
-      _trace("ERROR", "TRADE FAILED");
-      return Response.json(body: {"error": "TRADE_FAILED"});
+      _trace("ERROR", "TRADE FAILED: ${result.error}");
+      return Response.json(body: {
+        "error": "TRADE_FAILED",
+        "reason": result.error?.message,
+      });
     }
+
+    final contractId = result.contractId!;
+    final finalStake = result.finalStake;
 
     _trace("SUCCESS", contractId);
 
@@ -378,7 +382,7 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       // tena) - kwa CALL/PUT ya sasa, SL/TP zinasimamiwa NA
       // kutekelezwa NA server hii YENYEWE (_subscribeToTrade() chini),
       // si na Deriv.
-      stake: stake,
+      stake: finalStake,
       multiplier: DEFAULT_MULTIPLIER,
     );
 
@@ -396,7 +400,7 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       "   Contract ID : $contractId\n"
       "   Alama       : $symbol (Deriv: $derivSymbol)\n"
       "   Mwelekeo    : ${isBuy ? "BUY (CALL)" : "SELL (PUT)"}\n"
-      "   Stake       : \$${stake.toStringAsFixed(2)}\n"
+      "   Stake (ya mwisho, baada ya marekebisho yoyote) : \$${finalStake.toStringAsFixed(2)}\n"
       "   Entry       : $entry\n"
       "   SL iliyowekwa (server hii itasimamia) : $sl\n"
       "   TP iliyowekwa (server hii itasimamia) : $tp\n"
@@ -408,7 +412,7 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       "status": "EXECUTED",
       "contractId": contractId,
       "symbol": symbol,
-      "stake": stake,
+      "stake": finalStake,
       "sl": sl,
       "tp": tp,
       "balance": CURRENT_BALANCE,
@@ -657,6 +661,162 @@ String _normalizeSymbol(String s) => s.toUpperCase().trim();
 // engine (market_analysis_service.dart runBacktest()), ikiwa na kikomo
 // cha usalama dhidi ya "explosion" (stopDistance ndogo mno).
 
+// =====================================================================
+// ONGEZO JIPYA (kwa ombi la mtumiaji - usanifu safi zaidi): UAMUZI
+// WA STAKE/MUDA MPYA baada ya hitilafu ya Deriv sasa unafanyika HAPA
+// TU (trades.dart) - SI deriv_service.dart. deriv_service.dart
+// inarudisha TU taarifa kamili za hitilafu (PlaceTradeResult), na
+// SISI (hapa) tunaamua jinsi ya kujaribu tena, tukiheshimu
+// MAX_STAKE_PERCENT_OF_BALANCE na MIN_STAKE muda wote.
+// =====================================================================
+
+class _TradeAttemptResult {
+  final String? contractId;
+  final PlaceTradeError? error;
+  final double finalStake;
+
+  _TradeAttemptResult({
+    this.contractId,
+    this.error,
+    required this.finalStake,
+  });
+
+  bool get success => contractId != null;
+}
+
+// Kiwango cha chini kabisa cha stake tunachokubali kujaribu.
+const double MIN_STAKE = 1.0;
+
+Future<_TradeAttemptResult> _placeTradeWithRetries({
+  required String derivSymbol,
+  required String symbol,
+  required bool isBuy,
+  required double initialStake,
+  required double balance,
+}) async {
+  final deriv = DerivService.instance;
+
+  double currentStake = initialStake;
+  int durationValue = 24;
+  String durationUnit = "h";
+
+  // Kikomo cha juu cha majaribio - epuka mzunguko usio na mwisho
+  // endapo hitilafu zisizotarajiwa zikiendelea kujitokeza.
+  const maxAttempts = 3;
+
+  PlaceTradeError? lastError;
+
+  for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+    _trace("PLACE TRADE ATTEMPT $attempt/$maxAttempts", {
+      "symbol": symbol,
+      "stake": currentStake,
+      "duration": "$durationValue$durationUnit",
+    });
+
+    final result = await deriv.placeTrade(
+      derivSymbol,
+      isBuy,
+      stake: currentStake,
+      durationValue: durationValue,
+      durationUnit: durationUnit,
+    );
+
+    if (result.success) {
+      return _TradeAttemptResult(
+        contractId: result.contractId,
+        finalStake: currentStake,
+      );
+    }
+
+    lastError = result.error;
+
+    _trace("PLACE TRADE ATTEMPT $attempt FAILED", "$lastError");
+
+    if (attempt == maxAttempts) break;
+
+    // ================= AINA 1: MUDA HAUKUBALIKI =================
+    if (lastError?.code == "TradingDurationNotAllowed") {
+      _trace(
+        "RETRY DECISION",
+        "Muda ($durationValue$durationUnit) haukubaliki - kujaribu "
+        "tena na dakika 5.",
+      );
+      durationValue = 5;
+      durationUnit = "m";
+      continue;
+    }
+
+    // ================= AINA 2: KIKOMO CHA MALIPO (PAYOUT) =================
+    // FIX (uthibitisho wa moja kwa moja kutoka Deriv - RAW response
+    // halisi): "Minimum stake of 0.50 and maximum payout of 100.00.
+    // Current payout is 1681.37." - 'codeArgs' ina [minStake,
+    // maxPayout, currentPayout].
+    if (lastError?.code == "ContractBuyValidationError" ||
+        lastError?.subcode == "PayoutLimits") {
+      final codeArgs = lastError?.codeArgs;
+
+      if (codeArgs is List && codeArgs.length >= 3) {
+        final maxPayout = double.tryParse(codeArgs[1].toString());
+        final currentPayout = double.tryParse(codeArgs[2].toString());
+
+        if (maxPayout != null && currentPayout != null && currentPayout > 0) {
+          // Uwiano wa 90% ya kikomo - nafasi ndogo ya usalama.
+          final scaleFactor = (maxPayout / currentPayout) * 0.9;
+          var newStake = currentStake * scaleFactor;
+
+          // FIX: HESHIMU MAX_STAKE_PERCENT_OF_BALANCE na MIN_STAKE
+          // HATA baada ya kupunguzwa kwa sababu ya kikomo cha
+          // malipo - hii ndiyo hasa sababu ya kuhamisha uamuzi huu
+          // HAPA (trades.dart), si deriv_service.dart (ambayo
+          // haikuwa ikijua kuhusu vikomo hivi vya hatari kabisa).
+          final maxAllowedStake =
+              balance * (MAX_STAKE_PERCENT_OF_BALANCE / 100);
+
+          if (newStake > maxAllowedStake) newStake = maxAllowedStake;
+
+          if (newStake < MIN_STAKE) {
+            _trace(
+              "RETRY DECISION",
+              "Stake mpya (\$${newStake.toStringAsFixed(2)}) iko chini "
+              "ya MIN_STAKE (\$$MIN_STAKE) - haiwezekani kuendelea.",
+            );
+            break;
+          }
+
+          _trace(
+            "RETRY DECISION",
+            "Kikomo cha malipo kimezidiwa - stake "
+            "\$${currentStake.toStringAsFixed(2)} -> "
+            "\$${newStake.toStringAsFixed(2)}.",
+          );
+
+          currentStake = newStake;
+          continue;
+        }
+      }
+
+      _trace(
+        "RETRY DECISION",
+        "Kikomo cha malipo - haikuweza kuhesabu stake mpya kutoka "
+        "codeArgs: $codeArgs. Kukata tamaa.",
+      );
+      break;
+    }
+
+    // Aina nyingine ya hitilafu isiyotambulika - hakuna fallback ya
+    // kiotomatiki, kata tamaa.
+    _trace(
+      "RETRY DECISION",
+      "Hitilafu isiyotambulika (code=${lastError?.code}) - hakuna "
+      "fallback ya kiotomatiki. Kukata tamaa.",
+    );
+    break;
+  }
+
+  return _TradeAttemptResult(error: lastError, finalStake: currentStake);
+}
+
+
 double _riskPercentFor(double confidence) {
   // 'confidence' ni mizani 0-100 (kutoka
   // market_analysis_service.dart._calculateConfidence()).
@@ -665,14 +825,6 @@ double _riskPercentFor(double confidence) {
   if (confidence >= 75) return 1.0;
   return 0.5; // bado imepita MIN_CONFIDENCE, lakini ni dhaifu zaidi
 }
-
-// 🚨 ONGEZO JIPYA (kwa ombi la mtumiaji + uthibitisho wa logi halisi):
-// Deriv ina KIWANGO CHA CHINI cha 'stake' (kwa uzoefu, chini ya $1
-// mara nyingi inakataliwa - tulithibitisha hili moja kwa moja:
-// stake=$0.83 ilikataliwa na Deriv, ikitoa "hakuna 'id' kwenye jibu").
-// Sasa stake HAIWEZI KAMWE kuwa chini ya $1, hata kama hesabu ya
-// risk-based ingetoa namba ndogo zaidi.
-const double MIN_STAKE = 1.0;
 
 double _calculateStake({
   required double confidence,

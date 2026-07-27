@@ -811,50 +811,83 @@ class DerivService {
 // ⚠️ MABADILIKO MENGINE MUHIMU (kutoka "Proposal Comparison" - nyaraka
 // rasmi za Deriv): field 'symbol' imebadilishwa jina kuwa
 // 'underlying_symbol' kwenye ombi la 'proposal'.
-Future<String?> placeTrade(
+// =====================================================================
+// ONGEZO JIPYA: MUUNDO WA MATOKEO YA placeTrade() (kwa ombi la
+// mtumiaji - "uamuzi wa stake mpya unapaswa kuwa trades.dart pekee")
+// =====================================================================
+//
+// Awali placeTrade() ilikuwa ikifanya MAAMUZI YA HATARI (kupunguza
+// stake, kubadilisha muda) YENYEWE ndani ya deriv_service.dart -
+// jambo lililochanganya "wajibu" (deriv_service.dart inapaswa
+// kuwasiliana na Deriv TU, si kufanya maamuzi ya usimamizi wa
+// hatari - hilo ni kazi ya trades.dart, "master of psychology").
+//
+// Sasa placeTrade() ni JARIBIO MOJA TU - ikishindwa, inarudisha
+// PlaceTradeResult yenye TAARIFA KAMILI za hitilafu (code, subcode,
+// message, code_args) - trades.dart NDIYO inayoamua (na kuhesabu)
+// stake/muda mpya wa kujaribu tena, kisha kuita placeTrade() TENA
+// yenyewe.
+
+class PlaceTradeError {
+  final String? code;
+  final String? subcode;
+  final String message;
+  final List<dynamic>? codeArgs;
+
+  PlaceTradeError({
+    this.code,
+    this.subcode,
+    required this.message,
+    this.codeArgs,
+  });
+
+  @override
+  String toString() =>
+      "PlaceTradeError(code=$code, subcode=$subcode, message=$message, "
+      "codeArgs=$codeArgs)";
+}
+
+class PlaceTradeResult {
+  final String? contractId;
+  final PlaceTradeError? error;
+
+  PlaceTradeResult({this.contractId, this.error});
+
+  bool get success => contractId != null;
+
+  factory PlaceTradeResult.ok(String contractId) =>
+      PlaceTradeResult(contractId: contractId);
+
+  factory PlaceTradeResult.fail(PlaceTradeError error) =>
+      PlaceTradeResult(error: error);
+}
+
+// ONGEZO JIPYA: 'placeTrade()' sasa ni JARIBIO MOJA TU (single-shot) -
+// 'durationValue'/'durationUnit' ni PARAMETA WAZI (si zilizowekwa
+// ndani kimya kimya) - 'trades.dart' inaamua ni muda gani wa kutumia
+// (na kubadilisha kama la kwanza likishindwa).
+Future<PlaceTradeResult> placeTrade(
   String pair,
   bool isBuy, {
   double stake = 10,
-  double? entryPrice,
-  double? stopLossPrice,
-  double? takeProfitPrice,
-  int multiplier = 100, // haitumiki tena (Multiplier-specific) - imehifadhiwa kwa uwiano wa API ya nje, haina athari kwa CALL/PUT
-  int durationMinutes = 1440, // "wavu wa usalama" (siku 1) - SL/TP zetu za ndani ndizo zinazoamua kufunga mapema, si hii
+  int durationValue = 24,
+  String durationUnit = "h",
 }) async {
 
   final symbol = normalizeSymbol(pair);
 
   try {
 
-    // 🚨🚨🚨 FIX YA BUG HATARI (race condition iliyogunduliwa kupitia
-    // uchunguzi wa logi halisi): awali listener za 'proposal'/'buy'
-    // zilikuwa zikikubali JIBU LOLOTE lenye 'msg_type' inayolingana -
-    // BILA kuthibitisha kwamba jibu hilo ni la OMBI HILI MAALUM. Kama
-    // maombi MAWILI ya trade yakitokea KARIBU WAKATI MMOJA (mf.
-    // auto-trade + kitufe cha mkono, au auto-trades mbili za alama
-    // tofauti karibu wakati mmoja), kila listener ingeweza "kunyakua"
-    // jibu la OMBI TOFAUTI - ikisababisha data iliyochanganyika (mf.
-    // "hakuna 'id' kwenye jibu" - kwa sababu proposal ya alama A
-    // ilijaribu kusoma jibu la proposal ya alama B). Sasa kila ombi
-    // lina 'req_id' ya KIPEKEE, na listener inakataa (inapuuza) jibu
-    // lolote lisilo na 'req_id' inayolingana KABISA na hili ombi.
+    // 🚨 FIX YA BUG HATARI (race condition): kila ombi lina 'req_id'
+    // ya KIPEKEE - angalia maelezo marefu ya awali kuhusu hili.
     final proposalReqId = DateTime.now().microsecondsSinceEpoch;
 
-    // 1. GET PROPOSAL
     final proposalCompleter = Completer<Map<String, dynamic>>();
     late StreamSubscription proposalSub;
 
     proposalSub = stream.listen((event) {
-      // FIX: kataa jibu lolote lisilo na 'req_id' inayolingana KABISA
-      // na ombi hili - hata kama 'msg_type' inalingana.
       if (event["req_id"] != proposalReqId) return;
-
       if (event["msg_type"] == "proposal") {
-        if (!proposalCompleter.isCompleted) {
-          proposalCompleter.complete(event);
-        }
-        proposalSub.cancel();
-      } else if (event["msg_type"] == "error") {
         if (!proposalCompleter.isCompleted) {
           proposalCompleter.complete(event);
         }
@@ -862,22 +895,17 @@ Future<String?> placeTrade(
       }
     });
 
-    // 🚨 FIX (uwezekano mkubwa wa chanzo cha kushindwa kwa haraka
-    // sana - milisekunde 1-2 tu, haraka mno kuwa mawasiliano halisi
-    // na Deriv): '1440m' (dakika 1440 = siku 1, ikitumia unit ya
-    // "m") huenda si muundo unaokubalika kwa alama nyingi - Deriv
-    // mara nyingi ina masharti tofauti kuhusu unit gani inatumika kwa
-    // muda mrefu (h/d badala ya m). Sasa tunatumia MASAA (h) kama
-    // default - muundo unaokubalika zaidi kwa muda mrefu.
     final proposalRequest = {
       "proposal": 1,
       "amount": stake,
       "basis": "stake",
       "contract_type": isBuy ? "CALL" : "PUT",
       "currency": "USD",
+      // FIX (jina jipya la field - Options API "Proposal Comparison"):
+      // 'underlying_symbol' badala ya 'symbol' ya zamani.
       "underlying_symbol": pair,
-      "duration": (durationMinutes / 60).ceil(),
-      "duration_unit": "h",
+      "duration": durationValue,
+      "duration_unit": durationUnit,
       "req_id": proposalReqId,
     };
 
@@ -890,174 +918,124 @@ Future<String?> placeTrade(
       onTimeout: () => <String, dynamic>{},
     );
 
-    if (proposal["msg_type"] == "error") {
-      final errMsg =
-          proposal["error"]?["message"] ?? proposal["error"];
+    // 🚨🚨🚨 FIX YA BUG MUHIMU SANA (tuligundua kupitia RAW response
+    // halisi): Deriv KAMWE hairudishi 'msg_type: "error"' kwa
+    // makosa ya 'proposal' - inarudisha 'msg_type: "proposal"' HATA
+    // KAMA kuna 'error' field ndani yake. Sasa tunakagua UWEPO WA
+    // 'error' field moja kwa moja, bila kujali 'msg_type'.
+    final proposalError = proposal["error"];
 
-      print("[SERVER2-TRACE] ❌ Proposal error ($symbol): $errMsg");
+    if (proposalError != null) {
+      final errMsg = (proposalError["message"] ?? proposalError).toString();
 
-      // 🚨 ONGEZO JIPYA (fallback ya kudumu): kama muda mrefu (masaa)
-      // haukubaliki kwa alama hii mahususi, jaribu MARA MOJA TENA na
-      // muda MFUPI, wa kawaida zaidi na unaokubalika karibu kila
-      // mahali (dakika 5) - bora trade ifunguliwe na muda mfupi
-      // zaidi kuliko isifunguliwe kabisa. SL/TP zetu za ndani bado
-      // zitajaribu kufunga mapema - lakini kwa muda mfupi namna hii,
-      // kuna uwezekano contract itaisha yenyewe (win/lose kiasili)
-      // KABLA SL/TP kufikiwa kwa baadhi ya setups za "swing" za muda
-      // mrefu - hii ni MADHARA YANAYOJULIKANA ya fallback hii, si
-      // suluhisho kamili.
-      print("[SERVER2-TRACE] 🔁 Proposal fallback: kujaribu tena na muda mfupi (dakika 5)...");
-
-      final fallbackReqId = DateTime.now().microsecondsSinceEpoch;
-      final fallbackCompleter = Completer<Map<String, dynamic>>();
-      late StreamSubscription fallbackSub;
-
-      fallbackSub = stream.listen((event) {
-        if (event["req_id"] != fallbackReqId) return;
-        if (event["msg_type"] == "proposal" || event["msg_type"] == "error") {
-          if (!fallbackCompleter.isCompleted) {
-            fallbackCompleter.complete(event);
-          }
-          fallbackSub.cancel();
-        }
-      });
-
-      _send({
-        "proposal": 1,
-        "amount": stake,
-        "basis": "stake",
-        "contract_type": isBuy ? "CALL" : "PUT",
-        "currency": "USD",
-        "underlying_symbol": pair,
-        "duration": 5,
-        "duration_unit": "m",
-        "req_id": fallbackReqId,
-      });
-
-      final fallbackProposal = await fallbackCompleter.future.timeout(
-        const Duration(seconds: 10),
-        onTimeout: () => <String, dynamic>{},
+      print(
+        "[SERVER2-TRACE] ❌ Proposal error ($symbol): "
+        "code=${proposalError["code"]} message=$errMsg",
       );
 
-      if (fallbackProposal["msg_type"] == "error") {
-        print(
-          "[SERVER2-TRACE] ❌ Proposal fallback ($symbol) NAYO imeshindwa: "
-          "${fallbackProposal["error"]?["message"] ?? fallbackProposal["error"]}",
-        );
-        return null;
-      }
+      return PlaceTradeResult.fail(PlaceTradeError(
+        code: proposalError["code"]?.toString(),
+        subcode: proposalError["subcode"]?.toString(),
+        message: errMsg,
+        codeArgs: proposalError["code_args"],
+      ));
+    }
 
-      final fallbackP = fallbackProposal["proposal"];
-
-      if (fallbackP == null || fallbackP["id"] == null) {
-        print("[SERVER2-TRACE] ❌ Proposal fallback ($symbol) - hakuna 'id' kwenye jibu.");
-        return null;
-      }
-
-      return _buyFromProposal(fallbackP, symbol, isBuy: isBuy, stake: stake);
+    if (proposal.isEmpty) {
+      print(
+        "[SERVER2-TRACE] ❌ Proposal timeout ($symbol) - hakuna jibu "
+        "kutoka Deriv ndani ya sekunde 10.",
+      );
+      return PlaceTradeResult.fail(
+        PlaceTradeError(message: "Timeout - hakuna jibu kutoka Deriv"),
+      );
     }
 
     final p = proposal["proposal"];
 
-    // FIX (kutoka "Proposal Comparison"): 'id' NDIYO field pekee
-    // inayohakikishwa kuwepo kwenye jibu jipya - fields nyingine
-    // (ask_price, payout, spot) zinaweza zisiwepo kila wakati.
     if (p == null || p["id"] == null) {
       print(
-        "[SERVER2-TRACE] ❌ Proposal failed ($symbol) - hakuna 'id' kwenye "
-        "jibu kutoka Deriv. (req_id=$proposalReqId)",
+        "[SERVER2-TRACE] ❌ Proposal failed ($symbol) - hakuna 'id' "
+        "kwenye jibu. RAW: $proposal",
       );
-      // 🔍 ONGEZO JIPYA (diagnostic ya mwisho): chapisha JIBU LOTE
-      // GHAFI (raw) la Deriv - hii itatuonyesha muundo HALISI wa
-      // jibu, ikiwa 'id' iko mahali pengine (si
-      // proposal["proposal"]["id"]) kwa sababu ya jina la field
-      // kubadilika (sawa na "symbol"->"underlying_symbol"
-      // tuliyoigundua awali).
-      print("[SERVER2-TRACE] 🔬 RAW proposal response ($symbol): $proposal");
-      return null;
+      return PlaceTradeResult.fail(
+        PlaceTradeError(message: "Hakuna 'id' kwenye jibu la proposal"),
+      );
     }
 
-    return _buyFromProposal(p, symbol, isBuy: isBuy, stake: stake);
+    // 2. BUY CONTRACT
+    final buyReqId = DateTime.now().microsecondsSinceEpoch;
+    final buyCompleter = Completer<Map<String, dynamic>>();
+    late StreamSubscription buySub;
 
-  } catch (e) {
+    buySub = stream.listen((event) {
+      if (event["req_id"] != buyReqId) return;
+      if (event["msg_type"] == "buy") {
+        if (!buyCompleter.isCompleted) {
+          buyCompleter.complete(event);
+        }
+        buySub.cancel();
+      }
+    });
 
-    print(
-      "[SERVER2-TRACE] ❌ placeTrade error ($symbol): $e"
+    _send({
+      "buy": p["id"],
+      "price": p["ask_price"] ?? stake,
+      "req_id": buyReqId,
+    });
+
+    final buy = await buyCompleter.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => <String, dynamic>{},
     );
 
-    return null;
+    final buyError = buy["error"];
 
-  }
+    if (buyError != null) {
+      final errMsg = (buyError["message"] ?? buyError).toString();
 
-}
+      print("[SERVER2-TRACE] ❌ Buy error ($symbol): $errMsg");
 
-// ONGEZO JIPYA: kazi ya msaidizi iliyotolewa (extracted) kutoka
-// placeTrade() - inashughulikia hatua ya "buy" (baada ya proposal
-// kufanikiwa) - inatumika NA njia kuu (muda mrefu/saa) NA njia ya
-// fallback (muda mfupi/dakika 5, endapo muda mrefu haukukubaliwa na
-// Deriv kwa alama hii mahususi).
-Future<String?> _buyFromProposal(
-  Map<String, dynamic> p,
-  String symbol, {
-  required bool isBuy,
-  required double stake,
-}) async {
-  final buyReqId = DateTime.now().microsecondsSinceEpoch;
-
-  final buyCompleter = Completer<Map<String, dynamic>>();
-  late StreamSubscription buySub;
-
-  buySub = stream.listen((event) {
-    if (event["req_id"] != buyReqId) return;
-
-    if (event["msg_type"] == "buy") {
-      if (!buyCompleter.isCompleted) {
-        buyCompleter.complete(event);
-      }
-      buySub.cancel();
-    } else if (event["msg_type"] == "error") {
-      if (!buyCompleter.isCompleted) {
-        buyCompleter.complete(event);
-      }
-      buySub.cancel();
+      return PlaceTradeResult.fail(PlaceTradeError(
+        code: buyError["code"]?.toString(),
+        subcode: buyError["subcode"]?.toString(),
+        message: errMsg,
+        codeArgs: buyError["code_args"],
+      ));
     }
-  });
 
-  _send({
-    "buy": p["id"],
-    "price": p["ask_price"] ?? stake,
-    "req_id": buyReqId,
-  });
+    final contractId = buy["buy"]?["contract_id"]?.toString();
 
-  final buy = await buyCompleter.future.timeout(
-    const Duration(seconds: 10),
-    onTimeout: () => <String, dynamic>{},
-  );
+    if (contractId == null) {
+      print(
+        "[SERVER2-TRACE] ❌ Buy failed ($symbol) - hakuna 'contract_id' "
+        "kwenye jibu. RAW: $buy",
+      );
+      return PlaceTradeResult.fail(
+        PlaceTradeError(message: "Hakuna 'contract_id' kwenye jibu la buy"),
+      );
+    }
 
-  if (buy["msg_type"] == "error") {
-    print(
-      "[SERVER2-TRACE] ❌ Buy error ($symbol): "
-      "${buy["error"]?["message"] ?? buy["error"]}",
-    );
-    return null;
-  }
-
-  final contractId = buy["buy"]?["contract_id"]?.toString();
-
-  if (contractId != null) {
     print(
       "[SERVER2-TRACE] ✅ TRADE OPENED (CALL/PUT - Options API) $symbol "
       "ID:$contractId (${isBuy ? "CALL" : "PUT"}) - SL/TP HALISI "
       "zinasimamiwa na trades.dart (server 2), SI Deriv (CALL/PUT haina "
       "limit_order asili).",
     );
-  } else {
-    print("[SERVER2-TRACE] ❌ Buy failed ($symbol) - hakuna 'contract_id' kwenye jibu.");
+
+    return PlaceTradeResult.ok(contractId);
+
+  } catch (e) {
+
+    print("[SERVER2-TRACE] ❌ placeTrade error ($symbol): $e");
+
+    return PlaceTradeResult.fail(
+      PlaceTradeError(message: "Exception: $e"),
+    );
+
   }
 
-  return contractId;
 }
-
 
 Future<bool> sellContract(String contractId, {double price = 0}) async {
   try {
