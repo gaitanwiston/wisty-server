@@ -881,7 +881,7 @@ Future<String?> placeTrade(
       "req_id": proposalReqId,
     };
 
-    print("📋 Proposal request ($symbol): $proposalRequest");
+    print("[SERVER2-TRACE] 📋 Proposal request ($symbol): $proposalRequest");
 
     _send(proposalRequest);
 
@@ -894,7 +894,7 @@ Future<String?> placeTrade(
       final errMsg =
           proposal["error"]?["message"] ?? proposal["error"];
 
-      print("❌ Proposal error ($symbol): $errMsg");
+      print("[SERVER2-TRACE] ❌ Proposal error ($symbol): $errMsg");
 
       // 🚨 ONGEZO JIPYA (fallback ya kudumu): kama muda mrefu (masaa)
       // haukubaliki kwa alama hii mahususi, jaribu MARA MOJA TENA na
@@ -906,7 +906,7 @@ Future<String?> placeTrade(
       // KABLA SL/TP kufikiwa kwa baadhi ya setups za "swing" za muda
       // mrefu - hii ni MADHARA YANAYOJULIKANA ya fallback hii, si
       // suluhisho kamili.
-      print("🔁 Proposal fallback: kujaribu tena na muda mfupi (dakika 5)...");
+      print("[SERVER2-TRACE] 🔁 Proposal fallback: kujaribu tena na muda mfupi (dakika 5)...");
 
       final fallbackReqId = DateTime.now().microsecondsSinceEpoch;
       final fallbackCompleter = Completer<Map<String, dynamic>>();
@@ -941,7 +941,7 @@ Future<String?> placeTrade(
 
       if (fallbackProposal["msg_type"] == "error") {
         print(
-          "❌ Proposal fallback ($symbol) NAYO imeshindwa: "
+          "[SERVER2-TRACE] ❌ Proposal fallback ($symbol) NAYO imeshindwa: "
           "${fallbackProposal["error"]?["message"] ?? fallbackProposal["error"]}",
         );
         return null;
@@ -950,7 +950,7 @@ Future<String?> placeTrade(
       final fallbackP = fallbackProposal["proposal"];
 
       if (fallbackP == null || fallbackP["id"] == null) {
-        print("❌ Proposal fallback ($symbol) - hakuna 'id' kwenye jibu.");
+        print("[SERVER2-TRACE] ❌ Proposal fallback ($symbol) - hakuna 'id' kwenye jibu.");
         return null;
       }
 
@@ -964,8 +964,8 @@ Future<String?> placeTrade(
     // (ask_price, payout, spot) zinaweza zisiwepo kila wakati.
     if (p == null || p["id"] == null) {
       print(
-        "❌ Proposal failed ($symbol) - hakuna 'id' kwenye jibu kutoka "
-        "Deriv. (req_id=$proposalReqId)",
+        "[SERVER2-TRACE] ❌ Proposal failed ($symbol) - hakuna 'id' kwenye "
+        "jibu kutoka Deriv. (req_id=$proposalReqId)",
       );
       // 🔍 ONGEZO JIPYA (diagnostic ya mwisho): chapisha JIBU LOTE
       // GHAFI (raw) la Deriv - hii itatuonyesha muundo HALISI wa
@@ -973,7 +973,7 @@ Future<String?> placeTrade(
       // proposal["proposal"]["id"]) kwa sababu ya jina la field
       // kubadilika (sawa na "symbol"->"underlying_symbol"
       // tuliyoigundua awali).
-      print("🔬 RAW proposal response ($symbol): $proposal");
+      print("[SERVER2-TRACE] 🔬 RAW proposal response ($symbol): $proposal");
       return null;
     }
 
@@ -982,7 +982,7 @@ Future<String?> placeTrade(
   } catch (e) {
 
     print(
-      "❌ placeTrade error ($symbol): $e"
+      "[SERVER2-TRACE] ❌ placeTrade error ($symbol): $e"
     );
 
     return null;
@@ -1036,7 +1036,7 @@ Future<String?> _buyFromProposal(
 
   if (buy["msg_type"] == "error") {
     print(
-      "❌ Buy error ($symbol): "
+      "[SERVER2-TRACE] ❌ Buy error ($symbol): "
       "${buy["error"]?["message"] ?? buy["error"]}",
     );
     return null;
@@ -1046,13 +1046,13 @@ Future<String?> _buyFromProposal(
 
   if (contractId != null) {
     print(
-      "✅ TRADE OPENED (CALL/PUT - Options API) $symbol ID:$contractId "
-      "(${isBuy ? "CALL" : "PUT"}) - SL/TP HALISI zinasimamiwa na "
-      "trades.dart (server 2), SI Deriv (CALL/PUT haina limit_order "
-      "asili).",
+      "[SERVER2-TRACE] ✅ TRADE OPENED (CALL/PUT - Options API) $symbol "
+      "ID:$contractId (${isBuy ? "CALL" : "PUT"}) - SL/TP HALISI "
+      "zinasimamiwa na trades.dart (server 2), SI Deriv (CALL/PUT haina "
+      "limit_order asili).",
     );
   } else {
-    print("❌ Buy failed ($symbol) - hakuna 'contract_id' kwenye jibu.");
+    print("[SERVER2-TRACE] ❌ Buy failed ($symbol) - hakuna 'contract_id' kwenye jibu.");
   }
 
   return contractId;
