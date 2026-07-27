@@ -36,7 +36,7 @@ const String derivAppId = "33SNU6dEw3F7xVhyEHxz3"; // 🚨 BADILISHA HII na App 
 // inahitaji hatua ya REST kwanza (kupata "OTP" - One Time Password)
 // ikitumia Account ID + Token, KISHA kuunganisha kwa WebSocket URL
 // maalum inayorudishwa (yenye OTP ndani yake tayari).
-const String derivAccountId = "ROT91878830"; // Account ID yako
+const String derivAccountId = "DOT93181287"; // Account ID yako
 
 
 // FIX / MABORESHO: awali kulikuwa tu na m1, h1, h4, d1, w1, mn.
