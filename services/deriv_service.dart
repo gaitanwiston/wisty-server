@@ -876,7 +876,11 @@ Future<PlaceTradeResult> placeTrade(
   // ONGEZO JIPYA (Vanilla Options): "+0.00" = at-the-money (strike =
   // bei ya sasa). Inaweza kubadilishwa na caller (trades.dart) endapo
   // itahitajika siku moja kutumia strike tofauti na bei ya sasa.
-  String barrier = "+0.00",
+  // 🚨 FIX (hitilafu mpya - "Invalid barrier"): "+0.00" ilikataliwa na
+  // Deriv. Nyaraka za jumla za Deriv (mifano mingine isiyo ya Vanilla
+  // mahususi) zinaonyesha thamani zisizo sifuri (mf. "+0.1", "+0.37")
+  // zikifanya kazi - tunajaribu "+0.1" sasa.
+  String barrier = "+0.1",
 }) async {
 
   final symbol = normalizeSymbol(pair);
