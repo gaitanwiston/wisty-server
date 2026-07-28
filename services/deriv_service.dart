@@ -934,10 +934,19 @@ Future<Map<String, dynamic>?> getContractDurationLimits(
     );
 
     if (matches.isEmpty) {
+      // 🔍 ONGEZO JIPYA: chapisha contract_types ZOTE zinazopatikana
+      // kwa alama hii (bila kuchuja) - hii itatuonyesha WAZI alama
+      // hii inaunga mkono nini HASA, badala ya kubaki gizani.
+      final allTypes = available
+          .map((c) => c["contract_type"]?.toString())
+          .where((t) => t != null)
+          .toSet()
+          .toList();
+
       print(
         "[SERVER2-TRACE] ⚠️ $contractType HAIPATIKANI KABISA kwa "
-        "$symbol - alama hii inaweza isiungwe mkono na Vanilla "
-        "Options kabisa.",
+        "$symbol. Contract_types ZOTE zinazopatikana kwa alama hii "
+        "($symbol): $allTypes",
       );
       return null;
     }
