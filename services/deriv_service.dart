@@ -867,6 +867,89 @@ class DerivService {
 // 'durationValue'/'durationUnit' ni PARAMETA WAZI (si zilizowekwa
 // ndani kimya kimya) - 'trades.dart' inaamua ni muda gani wa kutumia
 // (na kubadilisha kama la kwanza likishindwa).
+// ONGEZO JIPYA (kwa ombi la mtumiaji - badala ya kuendelea kukisia
+// muda): 'contracts_for' inatupa MUDA HALISI unaokubalika kwa
+// contract_type maalum (VANILLALONGCALL/PUT) kwa alama mahususi -
+// badala ya kujaribu-jaribu (24h, dakika 5, n.k.) bila mwongozo.
+Future<Map<String, dynamic>?> getContractDurationLimits(
+  String symbol,
+  String contractType,
+) async {
+  try {
+    final reqId = DateTime.now().microsecondsSinceEpoch;
+    final completer = Completer<Map<String, dynamic>>();
+    late StreamSubscription sub;
+
+    sub = stream.listen((event) {
+      if (event["req_id"] != reqId) return;
+      if (event["msg_type"] == "contracts_for") {
+        if (!completer.isCompleted) completer.complete(event);
+        sub.cancel();
+      }
+    });
+
+    _send({
+      "contracts_for": symbol,
+      "currency": "USD",
+      "req_id": reqId,
+    });
+
+    final result = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => <String, dynamic>{},
+    );
+
+    if (result.isEmpty) {
+      print(
+        "[SERVER2-TRACE] ❌ getContractDurationLimits($symbol) timeout.",
+      );
+      return null;
+    }
+
+    if (result["error"] != null) {
+      print(
+        "[SERVER2-TRACE] ❌ getContractDurationLimits($symbol) error: "
+        "${result["error"]}",
+      );
+      return null;
+    }
+
+    final available = result["contracts_for"]?["available"];
+
+    if (available is! List) {
+      print(
+        "[SERVER2-TRACE] ❌ getContractDurationLimits($symbol) - "
+        "hakuna 'available' kwenye jibu. RAW: $result",
+      );
+      return null;
+    }
+
+    // 🔍 Diagnostic ya kina - tunachapisha kila entry ya contractType
+    // inayolingana, ili tuone muundo HALISI wa fields zilizopo.
+    final matches =
+        available.where((c) => c["contract_type"] == contractType).toList();
+
+    print(
+      "[SERVER2-TRACE] 🔬 contracts_for($symbol, $contractType): "
+      "entries ${matches.length} zilizopatikana. RAW: $matches",
+    );
+
+    if (matches.isEmpty) {
+      print(
+        "[SERVER2-TRACE] ⚠️ $contractType HAIPATIKANI KABISA kwa "
+        "$symbol - alama hii inaweza isiungwe mkono na Vanilla "
+        "Options kabisa.",
+      );
+      return null;
+    }
+
+    return Map<String, dynamic>.from(matches.first);
+  } catch (e) {
+    print("[SERVER2-TRACE] ❌ getContractDurationLimits($symbol) exception: $e");
+    return null;
+  }
+}
+
 Future<PlaceTradeResult> placeTrade(
   String pair,
   bool isBuy, {

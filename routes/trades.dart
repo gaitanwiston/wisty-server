@@ -717,6 +717,17 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
 }) async {
   final deriv = DerivService.instance;
 
+  // 🔍 ONGEZO JIPYA (diagnostic - kwa ombi la mtumiaji): kabla ya
+  // kujaribu trade, tunachunguza 'contracts_for' kuona muda HALISI
+  // unaokubalika kwa Vanilla Options kwa alama hii - hii itatuonyesha
+  // muundo halisi wa Deriv (fields za duration) ili tuweze kuacha
+  // "kukisia" (24h, dakika 5) na kutumia thamani SAHIHI moja kwa
+  // moja siku zijazo.
+  await deriv.getContractDurationLimits(
+    derivSymbol,
+    isBuy ? "VANILLALONGCALL" : "VANILLALONGPUT",
+  );
+
   double currentStake = initialStake;
   int durationValue = 24;
   String durationUnit = "h";
