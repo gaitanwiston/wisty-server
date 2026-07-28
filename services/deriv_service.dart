@@ -890,7 +890,6 @@ Future<Map<String, dynamic>?> getContractDurationLimits(
 
     _send({
       "contracts_for": symbol,
-      "currency": "USD",
       "req_id": reqId,
     });
 
