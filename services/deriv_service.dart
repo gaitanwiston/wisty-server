@@ -873,6 +873,10 @@ Future<PlaceTradeResult> placeTrade(
   double stake = 10,
   int durationValue = 24,
   String durationUnit = "h",
+  // ONGEZO JIPYA (Vanilla Options): "+0.00" = at-the-money (strike =
+  // bei ya sasa). Inaweza kubadilishwa na caller (trades.dart) endapo
+  // itahitajika siku moja kutumia strike tofauti na bei ya sasa.
+  String barrier = "+0.00",
 }) async {
 
   final symbol = normalizeSymbol(pair);
@@ -916,6 +920,17 @@ Future<PlaceTradeResult> placeTrade(
       "underlying_symbol": pair,
       "duration": durationValue,
       "duration_unit": durationUnit,
+      // 🚨🚨🚨 ONGEZO JIPYA (Vanilla Options - kwa ombi la mtumiaji):
+      // tumehamia Vanilla Options kutoka Rise/Fall ya kawaida, kwa
+      // sababu Vanilla INAHAKIKISHA uwezo wa kuuza mapema ("You may
+      // sell the contract up until 60 seconds before Expiry" -
+      // nyaraka rasmi za Deriv) - jambo ambalo Rise/Fall ya kawaida
+      // HAIKUWA ikilihakikishia (ndiyo chanzo cha "Resale not
+      // offered" tulizokuwa tukizipata). 'barrier' ni STRIKE PRICE
+      // ikiwa nafasi (offset) kutoka bei ya SASA - "+0.00" ni
+      // "at-the-money" (strike = bei ya sasa, sawa na Rise/Fall ya
+      // kawaida kimahusiano).
+      "barrier": barrier,
       "req_id": proposalReqId,
     };
 
