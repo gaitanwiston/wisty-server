@@ -962,33 +962,60 @@ Future<PlaceTradeResult> placeTrade(
   String pair,
   bool isBuy, {
   double stake = 10,
-  int durationValue = 24,
-  String durationUnit = "h",
-  // ONGEZO JIPYA (Vanilla Options): "+0.00" = at-the-money (strike =
-  // bei ya sasa). Inaweza kubadilishwa na caller (trades.dart) endapo
-  // itahitajika siku moja kutumia strike tofauti na bei ya sasa.
-  // 🚨 FIX (hitilafu mpya - "Invalid barrier"): "+0.00" ilikataliwa na
-  // Deriv. Nyaraka za jumla za Deriv (mifano mingine isiyo ya Vanilla
-  // mahususi) zinaonyesha thamani zisizo sifuri (mf. "+0.1", "+0.37")
-  // zikifanya kazi - tunajaribu "+0.1" sasa.
-  String barrier = "+0.1",
+  double? entryPrice,
+  double? stopLossPrice,
+  double? takeProfitPrice,
+  int multiplier = 100,
 }) async {
 
   final symbol = normalizeSymbol(pair);
 
-  // 🚨 FIX (hitilafu mpya iliyogunduliwa - Deriv inakataa stake yenye
-  // desimali zaidi ya 2, kwa kuwa ni kiasi cha fedha halisi, mf.
-  // 175.4724752320328 -> 175.47 TU): tunarunda (round) stake HAPA
-  // MARA MOJA, mwanzoni kabisa - kabla haijatumika popote (ombi la
-  // Deriv, print za logi, au thamani inayorudishwa) - ili KILA
-  // mahali kwenye kazi hii kuone/kutumia HIYO HIYO thamani sahihi
-  // iliyorundwa.
+  // FIX (Deriv inakataa stake yenye desimali zaidi ya 2 - kiasi cha
+  // fedha halisi): tunarunda MARA MOJA mwanzoni.
   stake = double.parse(stake.toStringAsFixed(2));
 
   try {
 
+    // 🚨🚨🚨 MABADILIKO MAKUBWA (kurudi Multipliers - kwa ombi la
+    // mtumiaji, baada ya kuthibitisha kupitia 'contracts_for' kwamba
+    // MULTUP/MULTDOWN ZINAPATIKANA kwa alama hii, tofauti na Vanilla
+    // Options ambazo hazikuwepo kabisa): Multipliers zina SL/TP
+    // ASILI (native) kupitia 'limit_order' - Deriv MWENYEWE
+    // anasimamia, si sisi kwa 'sellContract()' ya mkono kama
+    // ilivyokuwa kwa CALL/PUT. Hii ni ya UHAKIKA ZAIDI (SL/TP
+    // inafanya kazi hata kama server yetu ikianguka).
+    //
+    // 'limit_order.stop_loss'/'take_profit' ni KWA FEDHA (kiasi cha
+    // hasara/faida katika USD), SI bei ghafi ya soko - tunahesabu
+    // kiasi cha fedha kinacholingana na asilimia ya mabadiliko ya
+    // bei (kutoka entryPrice/stopLossPrice/takeProfitPrice)
+    // ukizidisha na 'multiplier' na 'stake'.
+    final Map<String, dynamic> limitOrder = {};
+
+    if (entryPrice != null && entryPrice > 0) {
+      if (stopLossPrice != null) {
+        final slPercent = (entryPrice - stopLossPrice).abs() / entryPrice;
+        final slAmount = stake * multiplier * slPercent;
+        limitOrder["stop_loss"] = double.parse(slAmount.toStringAsFixed(2));
+      }
+
+      if (takeProfitPrice != null) {
+        final tpPercent = (takeProfitPrice - entryPrice).abs() / entryPrice;
+        final tpAmount = stake * multiplier * tpPercent;
+        limitOrder["take_profit"] = double.parse(tpAmount.toStringAsFixed(2));
+      }
+    }
+
+    if (limitOrder.isEmpty) {
+      print(
+        "[SERVER2-TRACE] ⚠️ placeTrade($symbol): hakuna entryPrice/SL/TP "
+        "zilizotolewa - trade itafunguliwa BILA ulinzi wa Stop "
+        "Loss/Take Profit.",
+      );
+    }
+
     // 🚨 FIX YA BUG HATARI (race condition): kila ombi lina 'req_id'
-    // ya KIPEKEE - angalia maelezo marefu ya awali kuhusu hili.
+    // ya KIPEKEE.
     final proposalReqId = DateTime.now().microsecondsSinceEpoch;
 
     final proposalCompleter = Completer<Map<String, dynamic>>();
@@ -1008,30 +1035,13 @@ Future<PlaceTradeResult> placeTrade(
       "proposal": 1,
       "amount": stake,
       "basis": "stake",
-      // 🚨🚨🚨 FIX YA MWISHO (chanzo halisi cha "Invalid barrier"):
-      // "CALL"/"PUT" ni Rise/Fall YA KAWAIDA - HAIKUBALI 'barrier'
-      // KABISA (ndiyo maana ilikataliwa, si kwa sababu thamani ya
-      // barrier ilikuwa mbaya). Vanilla Options HALISI inatumia
-      // "VANILLALONGCALL"/"VANILLALONGPUT" - imethibitishwa kutoka
-      // orodha rasmi ya Deriv ya contract_type zote zinazopatikana.
-      "contract_type": isBuy ? "VANILLALONGCALL" : "VANILLALONGPUT",
+      "contract_type": isBuy ? "MULTUP" : "MULTDOWN",
       "currency": "USD",
       // FIX (jina jipya la field - Options API "Proposal Comparison"):
       // 'underlying_symbol' badala ya 'symbol' ya zamani.
       "underlying_symbol": pair,
-      "duration": durationValue,
-      "duration_unit": durationUnit,
-      // 🚨🚨🚨 ONGEZO JIPYA (Vanilla Options - kwa ombi la mtumiaji):
-      // tumehamia Vanilla Options kutoka Rise/Fall ya kawaida, kwa
-      // sababu Vanilla INAHAKIKISHA uwezo wa kuuza mapema ("You may
-      // sell the contract up until 60 seconds before Expiry" -
-      // nyaraka rasmi za Deriv) - jambo ambalo Rise/Fall ya kawaida
-      // HAIKUWA ikilihakikishia (ndiyo chanzo cha "Resale not
-      // offered" tulizokuwa tukizipata). 'barrier' ni STRIKE PRICE
-      // ikiwa nafasi (offset) kutoka bei ya SASA - "+0.00" ni
-      // "at-the-money" (strike = bei ya sasa, sawa na Rise/Fall ya
-      // kawaida kimahusiano).
-      "barrier": barrier,
+      "multiplier": multiplier,
+      if (limitOrder.isNotEmpty) "limit_order": limitOrder,
       "req_id": proposalReqId,
     };
 
@@ -1044,11 +1054,9 @@ Future<PlaceTradeResult> placeTrade(
       onTimeout: () => <String, dynamic>{},
     );
 
-    // 🚨🚨🚨 FIX YA BUG MUHIMU SANA (tuligundua kupitia RAW response
-    // halisi): Deriv KAMWE hairudishi 'msg_type: "error"' kwa
-    // makosa ya 'proposal' - inarudisha 'msg_type: "proposal"' HATA
-    // KAMA kuna 'error' field ndani yake. Sasa tunakagua UWEPO WA
-    // 'error' field moja kwa moja, bila kujali 'msg_type'.
+    // FIX (msg_type SI "error" kamwe - error field inajificha ndani
+    // ya jibu lenye msg_type:"proposal"): tunakagua UWEPO WA 'error'
+    // field moja kwa moja.
     final proposalError = proposal["error"];
 
     if (proposalError != null) {
@@ -1143,22 +1151,13 @@ Future<PlaceTradeResult> placeTrade(
     }
 
     print(
-      "[SERVER2-TRACE] ✅ TRADE OPENED (CALL/PUT - Options API) $symbol "
-      "ID:$contractId (${isBuy ? "VANILLALONGCALL" : "VANILLALONGPUT"}) - SL/TP HALISI "
-      "zinasimamiwa na trades.dart (server 2), SI Deriv (CALL/PUT haina "
-      "limit_order asili).",
+      "[SERVER2-TRACE] ✅ TRADE OPENED (MULTIPLIER) $symbol "
+      "ID:$contractId (${isBuy ? "MULTUP" : "MULTDOWN"} ${multiplier}x "
+      "SL:${limitOrder["stop_loss"] ?? "N/A"} "
+      "TP:${limitOrder["take_profit"] ?? "N/A"}) - SL/TP zinasimamiwa "
+      "NA Deriv MWENYEWE (limit_order asili), na ufuatiliaji wa ndani "
+      "wa trades.dart ni safu ya PILI ya ulinzi.",
     );
-
-    // 🚨🚨🚨 ONGEZO JIPYA (MUHIMU SANA - kwa ombi la mtumiaji, baada
-    // ya kugundua "Resale not offered"): tunachunguza MARA MOJA kama
-    // contract hii INAWEZA KUUZWA MAPEMA kabisa - Deriv wenyewe
-    // wanasema wazi: "not all contracts can be sold - it depends on
-    // asset's type or the trade duration". Kama contract hii
-    // HAIWEZI kuuzwa, SL/TP zetu za ndani HAZITAWEZA KUFANYA KAZI
-    // KABISA kwa trade hii - bora tujue SASA (na tuonye wazi), si
-    // baadaye pale SL/TP inapojaribu kufunga na kushindwa kimya
-    // kimya.
-    await _checkSellability(contractId, symbol);
 
     return PlaceTradeResult.ok(contractId);
 
@@ -1173,6 +1172,7 @@ Future<PlaceTradeResult> placeTrade(
   }
 
 }
+
 
 // ONGEZO JIPYA: kuchunguza mara moja kama contract fulani INAWEZA
 // kuuzwa mapema kabisa (kupitia 'proposal_open_contract' - Deriv
@@ -1338,13 +1338,11 @@ Future<bool> sellContract(String contractId, {double price = 0}) async {
   // wakati trade ilipofunguliwa) kuhesabu kiasi sahihi cha fedha kwa
   // bei mpya ya SL/TP.
   //
-  // 🚨🚨🚨 ONYO (baada ya kubadilika kwenda CALL/PUT - Options API):
-  // KAZI HII HAITAFANYA KAZI TENA kwa trades za CALL/PUT (haina
-  // 'contract_update'/'limit_order' asili kabisa - hizo ni dhana za
-  // Multiplier contracts TU). Imebakizwa hapa bila kuondolewa kwa
-  // usalama (endapo siku moja mtumiaji atabadili kutumia Multipliers
-  // tena), lakini 'trades.dart' SASA inatumia 'sellContract()' (hapo
-  // juu) kwa SL/TP/breakeven - SI kazi hii - kwa CALL/PUT.
+  // ✅ MUHIMU (tumerudi Multipliers - kazi hii SASA INATUMIKA
+  // TENA): Multipliers zina 'contract_update'/'limit_order' asili -
+  // kazi hii ndiyo njia HALISI ya breakeven/TP-extension (Deriv
+  // MWENYEWE anasimamia SL/TP baada ya update hii), si tena "dead
+  // code" kama ilivyokuwa wakati wa CALL/PUT.
   Future<bool> updateContractSLTP(
     String contractId, {
     double? newStopLossPrice,
@@ -1384,23 +1382,25 @@ Future<bool> sellContract(String contractId, {double price = 0}) async {
       return false;
     }
 
+    // FIX (req_id + error detection - uwiano na placeTrade()/
+    // sellContract(): angalia maelezo marefu kule kuhusu race
+    // condition na "msg_type SI error kamwe" iliyogunduliwa.
+    final reqId = DateTime.now().microsecondsSinceEpoch;
+
     final completer = Completer<Map<String, dynamic>>();
     late StreamSubscription sub;
 
     sub = stream.listen((event) {
-      if (event["msg_type"] == "contract_update") {
-        if (!completer.isCompleted) completer.complete(event);
-        sub.cancel();
-      } else if (event["msg_type"] == "error") {
-        if (!completer.isCompleted) completer.complete(event);
-        sub.cancel();
-      }
+      if (event["req_id"] != reqId) return;
+      if (!completer.isCompleted) completer.complete(event);
+      sub.cancel();
     });
 
     _send({
       "contract_update": 1,
       "contract_id": contractIdInt,
       "limit_order": limitOrder,
+      "req_id": reqId,
     });
 
     final result = await completer.future.timeout(
@@ -1408,10 +1408,17 @@ Future<bool> sellContract(String contractId, {double price = 0}) async {
       onTimeout: () => <String, dynamic>{},
     );
 
-    if (result["msg_type"] == "error") {
+    if (result.isEmpty) {
+      print("❌ contract_update timeout ($contractId).");
+      return false;
+    }
+
+    final updateError = result["error"];
+
+    if (updateError != null) {
       print(
         "❌ contract_update error ($contractId): "
-        "${result["error"]?["message"] ?? result["error"]}",
+        "${updateError["message"] ?? updateError}",
       );
       return false;
     }

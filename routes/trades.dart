@@ -345,6 +345,9 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       isBuy: isBuy,
       initialStake: stake,
       balance: CURRENT_BALANCE,
+      entry: entry,
+      sl: sl,
+      tp: tp,
     );
 
     if (!result.success) {
@@ -474,21 +477,15 @@ void _checkDailyLimits() {
 }
 
 /// ================= SUBSCRIBE =================
-// MABADILIKO MAKUBWA (baada ya kuhamia CALL/PUT - Options API):
-// CALL/PUT HAINA 'contract_update'/'limit_order' asili kabisa (hizo
-// ni dhana za Multiplier contracts TU, ambazo hazipatikani kwenye
-// akaunti hii). Kwa hiyo SL/TP HAZIWEZI "kubadilishwa" upande wa
-// Deriv - ufuatiliaji wa NDANI (humu humu) NDIYO utaratibu MKUU (SI
-// safu ya pili tena) wa kuamua ni lini trade inafungwa - kwa
-// kutumia 'sellContract()' (kuuza contract mapema, kabla ya muda
-// wake wa asili "wavu wa usalama" kuisha).
-//
-// Kwa ombi la mtumiaji - "fuatilia soko ili kuajust TP kama bado hali
-// ni nzuri": kila muda fulani (throttled), tunachukua UCHAMBUZI MPYA
-// KABISA wa alama hii, na kama bado unaonyesha mwelekeo ULE ULE NA TP
-// mpya iliyohesabiwa ni BORA zaidi - TUNAPANUA TP (ndani TU - hakuna
-// haja ya "kuambia" Deriv, kwa kuwa CALL/PUT haina TP ya asili
-// kuibadilisha).
+// 🚨 MABADILIKO MAKUBWA (kurudi Multipliers - kwa ombi la mtumiaji):
+// Multipliers ZINA 'contract_update'/'limit_order' asili - Deriv
+// MWENYEWE anasimamia SL/TP baada ya update (ya UHAKIKA ZAIDI
+// kuliko ufuatiliaji wetu wa ndani pekee - inafanya kazi hata kama
+// server yetu ikianguka/kukatika). Ufuatiliaji wa ndani (humu humu)
+// SASA NI SAFU YA PILI ya ulinzi (defense-in-depth) - endapo
+// 'contract_update' ikishindwa kwa sababu yoyote, ufuatiliaji wa
+// ndani bado unaendelea kufunga trade kwa usahihi kwa kutumia
+// 'sellContract()'.
 const Duration _tpCheckThrottle = Duration(seconds: 45);
 
 void _subscribeToTrade(ActiveTrade trade) {
@@ -508,14 +505,28 @@ void _subscribeToTrade(ActiveTrade trade) {
         : (trade.entry - price) / risk;
 
     if (!trade.breakeven && rr >= 1) {
-      // FIX: sasisha SL ya NDANI TU - hakuna 'contract_update' kwa
-      // CALL/PUT (haipo). Ufuatiliaji huu wa ndani (tpHit/slHit hapa
-      // chini) NDIYO utakaogundua bei ikigusa SL hii mpya na
-      // kuamuru 'sellContract()'.
       trade.sl = trade.entry;
       trade.breakeven = true;
 
-      _trace("BREAKEVEN (SL ya ndani imesogezwa hadi entry)", trade.contractId);
+      // 🚨 FIX (usalama mkubwa - kurudi Multipliers): sasa
+      // tunabadilisha SL HALISI ya Deriv pia (si tu thamani ya
+      // ndani) - kupitia 'contract_update'. Kama hii ikishindwa (mf.
+      // tatizo la muunganiko), trade.sl (ndani) bado imesasishwa -
+      // ufuatiliaji wa ndani utaendelea kulinda, ingawa Deriv
+      // yenyewe haitajua kuhusu hilo mpaka jaribio lijalo/mafanikio.
+      final updated = await deriv.updateContractSLTP(
+        trade.contractId,
+        newStopLossPrice: trade.sl,
+        entryPrice: trade.entry,
+        stake: trade.stake,
+        multiplier: trade.multiplier,
+      );
+
+      _trace(
+        "BREAKEVEN",
+        "${trade.contractId} - Deriv update: "
+        "${updated ? 'IMEFANIKIWA' : 'IMESHINDWA (ulinzi wa ndani bado upo)'}",
+      );
     }
 
     // TP extension - throttled (si kila tick).
@@ -539,23 +550,17 @@ void _subscribeToTrade(ActiveTrade trade) {
   TradeRegistry.instance.subscriptions[trade.contractId] = sub;
 }
 
-/// ================= TP EXTENSION (ONGEZO JIPYA) =================
+/// ================= TP EXTENSION =================
 /// Kama uchambuzi WA SASA (fresh) bado unaonyesha mwelekeo ULE ULE
 /// wenye nguvu, na TP mpya iliyohesabiwa (kwa mantiki ya SL/TP
 /// structure-aware) ni BORA zaidi kuliko TP ya sasa ya trade hii -
-/// panua TP YA NDANI (hakuna 'contract_update' ya Deriv kwa CALL/PUT
-/// - ufuatiliaji wetu wa ndani NDIYO utakaotambua TP mpya).
+/// panua TP, ndani ya server NA halisi upande wa Deriv (kupitia
+/// 'contract_update' - inafanya kazi tena kwa Multipliers).
 ///
 /// 🔒 DHAMANA MUHIMU (kwa ombi la mtumiaji): TP HAIWEZI KAMWE
 /// KUPUNGUA (kurudi karibu na entry) - INAWEZA TU KUONGEZEKA (kuenda
-/// mbali zaidi, faida zaidi). Hii ni "ratchet" ya upande MMOJA TU -
-/// mara TP ikiongezwa, HAIREJEI NYUMA kamwe, hata kama uchambuzi wa
-/// baadaye ungependekeza TP ndogo zaidi. Angalia '_isTpImprovement()'
-/// hapa chini - ndiyo eneo PEKEE linaloamua kama kubadilisha TP au
-/// la, na masharti yake ni WAZI: BUY inahitaji freshTp KUBWA ZAIDI ya
-/// tp ya sasa; SELL inahitaji freshTp NDOGO ZAIDI ya tp ya sasa -
-/// HAKUNA njia nyingine ya kubadilisha 'trade.tp' popote kwenye
-/// mfumo huu.
+/// mbali zaidi, faida zaidi). Angalia '_isTpImprovement()' hapa
+/// chini - ndiyo eneo PEKEE linaloamua kama kubadilisha TP au la.
 Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
   try {
     final freshAnalysis =
@@ -563,8 +568,6 @@ Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
 
     if (freshAnalysis == null) return;
 
-    // Soko bado ni "zuri" kwa mwelekeo huu HALISI - uchambuzi mpya
-    // bado unathibitisha mwelekeo ULE ULE wa trade hii.
     final stillGood =
         trade.buy ? freshAnalysis.canBuy : freshAnalysis.canSell;
 
@@ -572,9 +575,6 @@ Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
 
     final freshTp = freshAnalysis.risk.takeProfit;
 
-    // FIX (usalama wa ziada): kataa thamani za TP zisizo halali
-    // (sifuri/hasi) kabla ya kuzifikiria kabisa - ulinzi dhidi ya
-    // data mbovu ya uchambuzi kuharibu TP nzuri iliyopo tayari.
     if (freshTp <= 0) return;
 
     if (!_isTpImprovement(trade, freshTp)) return;
@@ -582,10 +582,19 @@ Future<void> _maybeExtendTakeProfit(ActiveTrade trade) async {
     final oldTp = trade.tp;
     trade.tp = freshTp;
 
+    final updated = await DerivService.instance.updateContractSLTP(
+      trade.contractId,
+      newTakeProfitPrice: freshTp,
+      entryPrice: trade.entry,
+      stake: trade.stake,
+      multiplier: trade.multiplier,
+    );
+
     _trace(
-      "TP EXTENDED (soko bado ni zuri - NDANI TU, CALL/PUT haina TP ya asili)",
+      "TP EXTENDED (soko bado ni zuri)",
       "${trade.pair} ${trade.contractId}: $oldTp -> $freshTp "
-      "(TP HAITAWAHI kupungua chini ya thamani hii tena)",
+      "(TP HAITAWAHI kupungua chini ya thamani hii tena) - "
+      "Deriv update: ${updated ? 'IMEFANIKIWA' : 'IMESHINDWA'}",
     );
   } catch (e) {
     _trace("TP EXTENSION ERROR", "${trade.contractId}: $e");
@@ -714,23 +723,13 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
   required bool isBuy,
   required double initialStake,
   required double balance,
+  required double entry,
+  required double sl,
+  required double tp,
 }) async {
   final deriv = DerivService.instance;
 
-  // 🔍 ONGEZO JIPYA (diagnostic - kwa ombi la mtumiaji): kabla ya
-  // kujaribu trade, tunachunguza 'contracts_for' kuona muda HALISI
-  // unaokubalika kwa Vanilla Options kwa alama hii - hii itatuonyesha
-  // muundo halisi wa Deriv (fields za duration) ili tuweze kuacha
-  // "kukisia" (24h, dakika 5) na kutumia thamani SAHIHI moja kwa
-  // moja siku zijazo.
-  await deriv.getContractDurationLimits(
-    derivSymbol,
-    isBuy ? "VANILLALONGCALL" : "VANILLALONGPUT",
-  );
-
   double currentStake = initialStake;
-  int durationValue = 24;
-  String durationUnit = "h";
 
   // Kikomo cha juu cha majaribio - epuka mzunguko usio na mwisho
   // endapo hitilafu zisizotarajiwa zikiendelea kujitokeza.
@@ -742,15 +741,22 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
     _trace("PLACE TRADE ATTEMPT $attempt/$maxAttempts", {
       "symbol": symbol,
       "stake": currentStake,
-      "duration": "$durationValue$durationUnit",
     });
 
+    // 🚨🚨🚨 MABADILIKO MAKUBWA (kurudi Multipliers - kwa ombi la
+    // mtumiaji, baada ya kuthibitisha kupitia 'contracts_for'
+    // kwamba MULTUP/MULTDOWN zinapatikana): 'placeTrade()' sasa
+    // inapokea entry/SL/TP moja kwa moja (kwa 'limit_order' asili ya
+    // Deriv), SI 'durationValue'/'durationUnit' (dhana ya CALL/PUT
+    // pekee, isiyofaa kwa Multipliers).
     final result = await deriv.placeTrade(
       derivSymbol,
       isBuy,
       stake: currentStake,
-      durationValue: durationValue,
-      durationUnit: durationUnit,
+      entryPrice: entry,
+      stopLossPrice: sl,
+      takeProfitPrice: tp,
+      multiplier: DEFAULT_MULTIPLIER,
     );
 
     if (result.success) {
@@ -766,23 +772,13 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
 
     if (attempt == maxAttempts) break;
 
-    // ================= AINA 1: MUDA HAUKUBALIKI =================
-    if (lastError?.code == "TradingDurationNotAllowed") {
-      _trace(
-        "RETRY DECISION",
-        "Muda ($durationValue$durationUnit) haukubaliki - kujaribu "
-        "tena na dakika 5.",
-      );
-      durationValue = 5;
-      durationUnit = "m";
-      continue;
-    }
-
-    // ================= AINA 2: KIKOMO CHA MALIPO (PAYOUT) =================
+    // ================= KIKOMO CHA MALIPO/STAKE =================
     // FIX (uthibitisho wa moja kwa moja kutoka Deriv - RAW response
-    // halisi): "Minimum stake of 0.50 and maximum payout of 100.00.
-    // Current payout is 1681.37." - 'codeArgs' ina [minStake,
-    // maxPayout, currentPayout].
+    // halisi): baadhi ya hitilafu za Deriv (mf. "Minimum stake of
+    // X.XX and maximum payout of Y.YY") zina 'codeArgs' inayotupatia
+    // maelezo ya kutosha kuhesabu stake mpya. Hii ni fallback ya
+    // JUMLA (si maalum kwa Multipliers TU) - itafanya kazi kwa
+    // hitilafu YOYOTE ya aina hii, bila kujali contract_type.
     if (lastError?.code == "ContractBuyValidationError" ||
         lastError?.subcode == "PayoutLimits") {
       final codeArgs = lastError?.codeArgs;
@@ -819,7 +815,7 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
 
           _trace(
             "RETRY DECISION",
-            "Kikomo cha malipo kimezidiwa - stake "
+            "Kikomo cha malipo/stake kimezidiwa - stake "
             "\$${currentStake.toStringAsFixed(2)} -> "
             "\$${newStake.toStringAsFixed(2)}.",
           );
