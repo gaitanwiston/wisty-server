@@ -917,7 +917,13 @@ Future<PlaceTradeResult> placeTrade(
       "proposal": 1,
       "amount": stake,
       "basis": "stake",
-      "contract_type": isBuy ? "CALL" : "PUT",
+      // 🚨🚨🚨 FIX YA MWISHO (chanzo halisi cha "Invalid barrier"):
+      // "CALL"/"PUT" ni Rise/Fall YA KAWAIDA - HAIKUBALI 'barrier'
+      // KABISA (ndiyo maana ilikataliwa, si kwa sababu thamani ya
+      // barrier ilikuwa mbaya). Vanilla Options HALISI inatumia
+      // "VANILLALONGCALL"/"VANILLALONGPUT" - imethibitishwa kutoka
+      // orodha rasmi ya Deriv ya contract_type zote zinazopatikana.
+      "contract_type": isBuy ? "VANILLALONGCALL" : "VANILLALONGPUT",
       "currency": "USD",
       // FIX (jina jipya la field - Options API "Proposal Comparison"):
       // 'underlying_symbol' badala ya 'symbol' ya zamani.
@@ -1047,7 +1053,7 @@ Future<PlaceTradeResult> placeTrade(
 
     print(
       "[SERVER2-TRACE] ✅ TRADE OPENED (CALL/PUT - Options API) $symbol "
-      "ID:$contractId (${isBuy ? "CALL" : "PUT"}) - SL/TP HALISI "
+      "ID:$contractId (${isBuy ? "VANILLALONGCALL" : "VANILLALONGPUT"}) - SL/TP HALISI "
       "zinasimamiwa na trades.dart (server 2), SI Deriv (CALL/PUT haina "
       "limit_order asili).",
     );
