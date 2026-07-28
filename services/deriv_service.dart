@@ -1033,6 +1033,17 @@ Future<PlaceTradeResult> placeTrade(
       "limit_order asili).",
     );
 
+    // 🚨🚨🚨 ONGEZO JIPYA (MUHIMU SANA - kwa ombi la mtumiaji, baada
+    // ya kugundua "Resale not offered"): tunachunguza MARA MOJA kama
+    // contract hii INAWEZA KUUZWA MAPEMA kabisa - Deriv wenyewe
+    // wanasema wazi: "not all contracts can be sold - it depends on
+    // asset's type or the trade duration". Kama contract hii
+    // HAIWEZI kuuzwa, SL/TP zetu za ndani HAZITAWEZA KUFANYA KAZI
+    // KABISA kwa trade hii - bora tujue SASA (na tuonye wazi), si
+    // baadaye pale SL/TP inapojaribu kufunga na kushindwa kimya
+    // kimya.
+    await _checkSellability(contractId, symbol);
+
     return PlaceTradeResult.ok(contractId);
 
   } catch (e) {
@@ -1045,6 +1056,80 @@ Future<PlaceTradeResult> placeTrade(
 
   }
 
+}
+
+// ONGEZO JIPYA: kuchunguza mara moja kama contract fulani INAWEZA
+// kuuzwa mapema kabisa (kupitia 'proposal_open_contract' - Deriv
+// inarudisha 'is_valid_to_sell' moja kwa moja). Hii inatuonya MAPEMA
+// endapo SL/TP zetu za ndani HAZITAWEZA kufanya kazi kwa trade hii
+// mahususi (kwa sababu ya "Resale not offered" - inategemea aina ya
+// alama/muda uliochaguliwa, kama Deriv wenyewe wanavyoeleza).
+Future<void> _checkSellability(String contractId, String symbol) async {
+  try {
+    final checkReqId = DateTime.now().microsecondsSinceEpoch;
+    final completer = Completer<Map<String, dynamic>>();
+    late StreamSubscription sub;
+
+    final contractIdInt = int.tryParse(contractId);
+
+    sub = stream.listen((event) {
+      if (event["req_id"] != checkReqId) return;
+      if (event["msg_type"] == "proposal_open_contract") {
+        if (!completer.isCompleted) completer.complete(event);
+        sub.cancel();
+      }
+    });
+
+    _send({
+      "proposal_open_contract": 1,
+      "contract_id": contractIdInt ?? contractId,
+      "req_id": checkReqId,
+    });
+
+    final result = await completer.future.timeout(
+      const Duration(seconds: 8),
+      onTimeout: () => <String, dynamic>{},
+    );
+
+    if (result.isEmpty) {
+      print(
+        "[SERVER2-TRACE] ⚠️ _checkSellability($contractId): timeout - "
+        "haikuweza kuthibitisha hali ya 'sellable'.",
+      );
+      return;
+    }
+
+    if (result["error"] != null) {
+      print(
+        "[SERVER2-TRACE] ⚠️ _checkSellability($contractId) error: "
+        "${result["error"]}",
+      );
+      return;
+    }
+
+    final poc = result["proposal_open_contract"];
+    final isValidToSell = poc?["is_valid_to_sell"];
+
+    if (isValidToSell == 0 || isValidToSell == false) {
+      print(
+        "[SERVER2-TRACE] 🚨🚨🚨 ONYO KUBWA: $symbol ID:$contractId "
+        "'is_valid_to_sell'=$isValidToSell - CONTRACT HII HAIWEZI "
+        "KUUZWA MAPEMA KABISA (Resale not offered)! SL/TP zetu za "
+        "ndani HAZITAWEZA kufunga trade hii mapema - itabaki wazi "
+        "hadi 'wavu wa usalama' (muda uliowekwa) uishe, bila kujali "
+        "SL/TP zifikiwe. Fikiria kutumia muda mfupi zaidi kwa alama "
+        "hii siku zijazo.",
+      );
+    } else {
+      print(
+        "[SERVER2-TRACE] ✅ _checkSellability($contractId): "
+        "is_valid_to_sell=$isValidToSell - SL/TP za ndani zitafanya "
+        "kazi ipasavyo kwa trade hii.",
+      );
+    }
+  } catch (e) {
+    print("[SERVER2-TRACE] ⚠️ _checkSellability($contractId) exception: $e");
+  }
 }
 
 Future<bool> sellContract(String contractId, {double price = 0}) async {
