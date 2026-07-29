@@ -1180,6 +1180,65 @@ Future<PlaceTradeResult> placeTrade(
 // endapo SL/TP zetu za ndani HAZITAWEZA kufanya kazi kwa trade hii
 // mahususi (kwa sababu ya "Resale not offered" - inategemea aina ya
 // alama/muda uliochaguliwa, kama Deriv wenyewe wanavyoeleza).
+// ONGEZO JIPYA: kuthibitisha hali HALISI ya contract (imefungwa au
+// bado iko wazi) - inatumika ndani ya 'sellContract()' pale ombi la
+// 'sell' likiisha muda (timeout) bila jibu la moja kwa moja, kama
+// njia ya "kuthibitisha kabla ya kukata tamaa" badala ya kudhania
+// kushindwa moja kwa moja.
+Future<bool> _verifyContractClosed(String contractId) async {
+  try {
+    final reqId = DateTime.now().microsecondsSinceEpoch;
+    final completer = Completer<Map<String, dynamic>>();
+    late StreamSubscription sub;
+
+    final contractIdInt = int.tryParse(contractId);
+
+    sub = stream.listen((event) {
+      if (event["req_id"] != reqId) return;
+      if (event["msg_type"] == "proposal_open_contract") {
+        if (!completer.isCompleted) completer.complete(event);
+        sub.cancel();
+      }
+    });
+
+    _send({
+      "proposal_open_contract": 1,
+      "contract_id": contractIdInt ?? contractId,
+      "req_id": reqId,
+    });
+
+    final result = await completer.future.timeout(
+      const Duration(seconds: 8),
+      onTimeout: () => <String, dynamic>{},
+    );
+
+    if (result.isEmpty || result["error"] != null) {
+      print(
+        "[SERVER2-TRACE] ⚠️ _verifyContractClosed($contractId): "
+        "haikuweza kuthibitisha (timeout/error). RAW: $result",
+      );
+      return false;
+    }
+
+    final poc = result["proposal_open_contract"];
+
+    // 'is_sold'==1 au 'is_expired'==1 zote zinamaanisha contract
+    // HAIPO tena wazi (imefungwa/imeisha).
+    final isSold = poc?["is_sold"] == 1;
+    final isExpired = poc?["is_expired"] == 1;
+
+    print(
+      "[SERVER2-TRACE] 🔬 _verifyContractClosed($contractId): "
+      "is_sold=${poc?["is_sold"]} is_expired=${poc?["is_expired"]}",
+    );
+
+    return isSold || isExpired;
+  } catch (e) {
+    print("[SERVER2-TRACE] ⚠️ _verifyContractClosed($contractId) exception: $e");
+    return false;
+  }
+}
+
 Future<void> _checkSellability(String contractId, String symbol) async {
   try {
     final checkReqId = DateTime.now().microsecondsSinceEpoch;
@@ -1281,14 +1340,44 @@ Future<bool> sellContract(String contractId, {double price = 0}) async {
     _send(sellRequest);
 
     final result = await completer.future.timeout(
-      const Duration(seconds: 10),
+      const Duration(seconds: 15),
       onTimeout: () => <String, dynamic>{},
     );
 
     if (result.isEmpty) {
       print(
-        "[SERVER2-TRACE] ❌ sellContract timeout ($contractId) - hakuna "
-        "jibu kutoka Deriv ndani ya sekunde 10.",
+        "[SERVER2-TRACE] ⚠️ sellContract timeout ($contractId) - hakuna "
+        "jibu la moja kwa moja kutoka Deriv ndani ya sekunde 15. "
+        "Kuthibitisha hali HALISI ya contract kabla ya kutangaza "
+        "kushindwa (huenda Deriv ILIFANIKIWA kuiuza, jibu tu "
+        "halikufika kwa wakati kwa sababu ya msongamano wa "
+        "muunganiko).",
+      );
+
+      // 🚨🚨🚨 FIX MUHIMU (kwa ombi la mtumiaji - "Deriv.com inaonyesha
+      // imefungwa lakini UI inasema failed"): timeout HAIMAANISHI
+      // Deriv haikufanikisha ombi - inaweza kuwa jibu tu halikufika
+      // KWETU kwa wakati (muunganiko una shughuli nyingi - candles +
+      // tick monitoring ya trades nyingine). Tunathibitisha hali
+      // HALISI kupitia 'proposal_open_contract' kabla ya kukata
+      // tamaa - kama contract tayari imeuzwa (is_sold=1), tunarudisha
+      // 'true' (mafanikio HALISI), si 'false' (kushindwa kwa uongo).
+      final isActuallyClosed =
+          await _verifyContractClosed(contractId);
+
+      if (isActuallyClosed) {
+        print(
+          "[SERVER2-TRACE] ✅ sellContract($contractId): imethibitishwa "
+          "IMEFUNGWA KWELI (kupitia proposal_open_contract), ijapokuwa "
+          "jibu la moja kwa moja la 'sell' halikufika kwa wakati.",
+        );
+        return true;
+      }
+
+      print(
+        "[SERVER2-TRACE] ❌ sellContract($contractId): imethibitishwa "
+        "BADO IKO WAZI - timeout ilikuwa halisi (Deriv haikufanikisha "
+        "ombi).",
       );
       return false;
     }
