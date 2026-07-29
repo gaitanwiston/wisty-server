@@ -731,6 +731,15 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
 
   double currentStake = initialStake;
 
+  // 🚨 ONGEZO JIPYA (kwa ombi la mtumiaji - "MultiplierOutOfRange"):
+  // multiplier NAYO sasa ni sehemu ya retry - alama tofauti
+  // zinakubali multiplier TOFAUTI (mf. 1HZ50V inakubali TU
+  // 80/200/400/600/800, si 100 ya default). Tunaanza na
+  // DEFAULT_MULTIPLIER, na kama Deriv ikikataa kwa sababu ya hilo,
+  // tunachagua thamani halali iliyo KARIBU ZAIDI kutoka orodha
+  // Deriv inayotupatia (codeArgs), na kujaribu tena.
+  int currentMultiplier = DEFAULT_MULTIPLIER;
+
   // Kikomo cha juu cha majaribio - epuka mzunguko usio na mwisho
   // endapo hitilafu zisizotarajiwa zikiendelea kujitokeza.
   const maxAttempts = 3;
@@ -741,6 +750,7 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
     _trace("PLACE TRADE ATTEMPT $attempt/$maxAttempts", {
       "symbol": symbol,
       "stake": currentStake,
+      "multiplier": currentMultiplier,
     });
 
     // 🚨🚨🚨 MABADILIKO MAKUBWA (kurudi Multipliers - kwa ombi la
@@ -756,7 +766,7 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
       entryPrice: entry,
       stopLossPrice: sl,
       takeProfitPrice: tp,
-      multiplier: DEFAULT_MULTIPLIER,
+      multiplier: currentMultiplier,
     );
 
     if (result.success) {
@@ -772,6 +782,58 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
 
     if (attempt == maxAttempts) break;
 
+    // ================= MULTIPLIER NJE YA KIWANGO =================
+    // FIX (kwa ombi la mtumiaji - uthibitisho wa moja kwa moja kutoka
+    // Deriv, RAW response halisi): "Multiplier is not in acceptable
+    // range. Accepts 80,200,400,600,800." - codeArgs hapa ni ORODHA
+    // YA MULTIPLIER HALALI (si [minStake,maxPayout,currentPayout] kama
+    // PayoutLimits) - tunachagua thamani iliyo KARIBU ZAIDI na
+    // DEFAULT_MULTIPLIER kutoka orodha hii, na kujaribu tena. Hii
+    // LAZIMA ikaguliwe KABLA ya ukaguzi wa jumla wa
+    // "ContractBuyValidationError" hapa chini (subcode tofauti,
+    // codeArgs ya maana tofauti kabisa - orodha ya multiplier, si
+    // [min,max,current] ya payout).
+    if (lastError?.subcode == "MultiplierOutOfRange") {
+      final validMultipliers = lastError?.codeArgs;
+
+      if (validMultipliers is List && validMultipliers.isNotEmpty) {
+        final parsed = validMultipliers
+            .map((v) => int.tryParse(v.toString()))
+            .whereType<int>()
+            .toList();
+
+        if (parsed.isNotEmpty) {
+          // Chagua thamani iliyo KARIBU ZAIDI na multiplier ya sasa
+          // (kawaida DEFAULT_MULTIPLIER) - epuka kuchagua multiplier
+          // kubwa kupita kiasi (hatari zaidi) bila sababu.
+          parsed.sort(
+            (a, b) => (a - currentMultiplier).abs().compareTo(
+                  (b - currentMultiplier).abs(),
+                ),
+          );
+
+          final newMultiplier = parsed.first;
+
+          _trace(
+            "RETRY DECISION",
+            "Multiplier $currentMultiplier haikubaliki kwa $symbol - "
+            "orodha halali: $parsed - kujaribu tena na "
+            "multiplier $newMultiplier.",
+          );
+
+          currentMultiplier = newMultiplier;
+          continue;
+        }
+      }
+
+      _trace(
+        "RETRY DECISION",
+        "MultiplierOutOfRange lakini haikuweza kusoma orodha halali "
+        "kutoka codeArgs: $validMultipliers. Kukata tamaa.",
+      );
+      break;
+    }
+
     // ================= KIKOMO CHA MALIPO/STAKE =================
     // FIX (uthibitisho wa moja kwa moja kutoka Deriv - RAW response
     // halisi): baadhi ya hitilafu za Deriv (mf. "Minimum stake of
@@ -779,6 +841,11 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
     // maelezo ya kutosha kuhesabu stake mpya. Hii ni fallback ya
     // JUMLA (si maalum kwa Multipliers TU) - itafanya kazi kwa
     // hitilafu YOYOTE ya aina hii, bila kujali contract_type.
+    //
+    // MUHIMU: sharti hili linakubali TU kama subcode SI
+    // "MultiplierOutOfRange" (imeshughulikiwa hapo juu) - vinginevyo
+    // codeArgs ya multiplier ingesomwa VIBAYA kama [minStake,
+    // maxPayout, currentPayout], ikitoa matokeo yasiyo na maana.
     if (lastError?.code == "ContractBuyValidationError" ||
         lastError?.subcode == "PayoutLimits") {
       final codeArgs = lastError?.codeArgs;
