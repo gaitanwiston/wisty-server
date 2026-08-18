@@ -7,7 +7,6 @@ import 'package:web_socket_channel/io.dart';
 
 import '../services/market_analysis_service.dart';
 import '../models/market_analysis_result.dart';
-import '../models/all_pairs.dart';
 import '../services/deriv_service.dart';
 
 /// ================= GLOBAL STATE =================
@@ -19,6 +18,20 @@ final Map<String, DateTime> _lastSent = {};
 final derivService = DerivService.instance;
 
 const int cooldownSeconds = 3;
+
+// 🚨🚨🚨 FIX YA BUG HALISI (kwa ombi la mtumiaji - "0% kila mahali,
+// snapshot 0 pairs"): 'allPairs28' ilikuwa ORODHA TULI (hardcoded,
+// kutoka '../models/all_pairs.dart') yenye alama 28 TU - tofauti
+// KABISA na Server 2 ambayo inatumia 'getMarketPairs()' (kwa nguvu,
+// alama 89+). Kama majina ndani ya 'allPairs28' hayakuendana KABISA
+// na yale halisi ya Deriv (au yalikuwa machache mno), 'latestFor()'
+// ilikuwa ikirudisha 'null' kwa KILA alama - snapshot ikabaki TUPU
+// KABISA ("0 pairs"), na clients wapya (mfano baada ya reconnect)
+// hawakuwahi kupata data yoyote ya awali. Sasa 'allPairs28'
+// imeondolewa KABISA - orodha ya alama sasa inapatikana KWA NGUVU
+// (dynamic) kupitia 'getMarketPairs()', sawa KABISA na Server 2 -
+// hakuna tena hatari ya "list mbili tofauti zisizoendana".
+List<String> _allPairs = [];
 
 // FIX (bug halisi yenye athari kubwa - sababu kuu clients hawakuwa
 // wakipokea signal walizojisajilia): injini (MarketAnalysisService)
@@ -45,7 +58,7 @@ String _normalize(String s) => s.trim().toUpperCase();
 String? _resolvePair(String raw) {
   final normalizedInput = _normalize(raw);
 
-  for (final p in allPairs28) {
+  for (final p in _allPairs) {
     if (_normalize(p) == normalizedInput) {
       return normalizedInput;
     }
@@ -73,8 +86,68 @@ Future<void> main() async {
 
   final service = MarketAnalysisService.instance;
 
-  await service.startPairs(allPairs28);
-  service.startPeriodicAnalysis(allPairs28);
+  // 🚨 FIX (angalia maelezo marefu hapo juu kuhusu 'allPairs28'):
+  // tunaunganisha na Deriv KWANZA, kisha kupata orodha KAMILI ya
+  // alama KWA NGUVU (dynamic) - sawa KABISA na Server 2. Hii
+  // inahakikisha Server 1 na Server 2 ZINACHAMBUA ALAMA ZILE ZILE
+  // HASA, bila hatari ya "orodha mbili tofauti zisizoendana".
+  print("🔌 Kuunganisha na Deriv kupata orodha ya alama...");
+
+  await derivService.connect();
+
+  // 🚨🚨🚨 FIX YA BUG HALISI YA MWISHO (kwa ombi la mtumiaji - "KILA
+  // alama 'haitambuliki'"): tuligundua kwamba 'await for (HttpRequest
+  // request in server)' (inayoshughulikia wateja) HAIANZI mpaka hatua
+  // hii ikamilike - kwa hiyo HAIKUWA "race condition" ya muda. Badala
+  // yake: 'getMarketPairs()' ilikuwa ikirudisha ORODHA TUPU KABISA
+  // (kushindwa kikamilifu, si "bado inasubiri") - na code ya AWALI
+  // haikuwa ikiangalia hilo KABISA, ikiendelea mbele na
+  // '_allPairs=[]' MILELE kwa kikao (session) kizima cha server. Kwa
+  // hiyo KILA client aliyejaribu kujisajili (subscribe) kwa ALAMA
+  // YOYOTE alipata "haitambuliki" - si kwa sababu ya muda, bali kwa
+  // sababu orodha halisi ilikuwa TUPU tangu mwanzo hadi mwisho.
+  //
+  // Sasa: tunajaribu tena (retry, na muda unaoongezeka - 5s, 10s,
+  // 20s...) HADI orodha isiwe tupu - na server HAIANZI KUPOKEA
+  // WATEJA KABISA mpaka hili likamilike (badala ya kuendelea kimya
+  // kimya na orodha tupu).
+  const maxPairsAttempts = 6;
+  int pairsAttempt = 0;
+
+  while (_allPairs.isEmpty && pairsAttempt < maxPairsAttempts) {
+    pairsAttempt++;
+
+    print(
+      "🔌 Kupata orodha ya alama (jaribio $pairsAttempt/$maxPairsAttempts)...",
+    );
+
+    _allPairs = await derivService.getMarketPairs();
+
+    if (_allPairs.isEmpty && pairsAttempt < maxPairsAttempts) {
+      final waitSeconds = 5 * pairsAttempt;
+      print(
+        "⚠️ getMarketPairs() imerudisha orodha TUPU - kusubiri "
+        "sekunde $waitSeconds kisha kujaribu tena...",
+      );
+      await Future.delayed(Duration(seconds: waitSeconds));
+    }
+  }
+
+  if (_allPairs.isEmpty) {
+    print(
+      "❌❌❌ HITILAFU KUBWA: getMarketPairs() imeshindwa mara zote "
+      "$maxPairsAttempts - HAKUNA alama zitakazopatikana kwa server "
+      "hii. Angalia Deriv App ID/Token ya Server 1, au muunganiko wa "
+      "mtandao. Server bado itaendesha (kuepuka kuanguka kabisa), "
+      "lakini clients HAWATAWEZA kujisajili kwa alama yoyote hadi "
+      "hili litatuliwe (anzisha upya server baada ya kurekebisha).",
+    );
+  }
+
+  print("📊 SIGNALS SERVER: alama ${_allPairs.length} zimepatikana kwa nguvu.");
+
+  await service.startPairs(_allPairs);
+  service.startPeriodicAnalysis(_allPairs);
 
   service.analysisStream.listen((result) {
     _handleEngineSignal(result);
@@ -177,14 +250,27 @@ void _handleClient(WebSocketChannel socket, dynamic msg) {
         return;
       }
 
-      if (!derivService.isReady(resolved)) {
-        _safeSend(socket, {
-          "type": "error",
-          "message": "Alama '$resolved' bado haiko tayari (data haitoshi bado).",
-        });
-        return;
-      }
-
+      // 🚨🚨🚨 FIX YA BUG HALISI (kwa ombi la mtumiaji - "0% kila
+      // mahali milele, hata baada ya dakika 5+"): AWALI hapa kulikuwa
+      // na 'if (!derivService.isReady(resolved)) { ...kataa... }' -
+      // kama alama haikuwa "tayari" (candles za kutosha) KWA WAKATI
+      // HUSISO WA USAJILI, ombi lilikataliwa na ujumbe wa "error" -
+      // LAKINI 'api_service.dart' (Flutter client) HAIKUWAHI
+      // KUSHUGHULIKIA ujumbe wa aina "error" KABISA (haujaribu tena
+      // kiotomatiki) - client alibaki "amejisajili" kwa mtazamo wake,
+      // lakini kihalisia HAKUWAHI kuongezwa kwenye '_clients[resolved]'
+      // - HAKUWAHI KUPOKEA BROADCAST YOYOTE kwa alama hiyo kwa kikao
+      // (session) kizima, hata Server 1 ikiwa tayari BAADAYE. Kama
+      // Server 1 na app zilianza karibu wakati mmoja (kawaida sana -
+      // mtumiaji anafungua app mara Server 1 ikianzishwa upya), ALAMA
+      // NYINGI/ZOTE zingekuwa "hazijawa tayari" wakati huo, na kikao
+      // kizima kingebaki "0% milele" - kikithibitishwa na majaribio.
+      //
+      // Sasa: usajili UNAKUBALIWA KILA WAKATI (bila kujali 'isReady')
+      // - hii ni SALAMA KABISA: broadcasts ('_broadcastSignal') tayari
+      // hazitumwi mpaka '_run()' ikamilishe uchambuzi WA KWANZA
+      // HALISI kwa alama hiyo - kizuizi cha 'isReady' hapa kilikuwa
+      // hakina maana (redundant) na kilisababisha hasara halisi.
       _clients.putIfAbsent(resolved, () => []);
       if (!_clients[resolved]!.contains(socket)) {
         _clients[resolved]!.add(socket);
@@ -295,11 +381,12 @@ void _sendSnapshot(WebSocketChannel socket) {
 
   final snapshot = <String, dynamic>{};
 
-  for (final pair in allPairs28) {
+  for (final pair in _allPairs) {
     // FIX: 'latestFor()' sasa inasawazisha jina lenyewe ndani
     // (angalia fix kwenye market_analysis_service.dart), hivyo hii
     // itapata matokeo sahihi bila kujali herufi za 'pair' kama
-    // zilivyoandikwa kwenye allPairs28.
+    // zilivyoandikwa kwenye '_allPairs' (sasa ya nguvu/dynamic, si
+    // 'allPairs28' tuli ya zamani).
     final r = service.latestFor(pair);
     if (r == null) continue;
 
