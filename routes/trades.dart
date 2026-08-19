@@ -204,12 +204,39 @@ Future<Response> _handleSignal(Map<String, dynamic> json) async {
       return Response.json(body: {"status": "ALREADY_OPEN_FOR_SYMBOL"});
     }
 
-    CURRENT_BALANCE = await _getBalance();
+    final freshBalance = await _getBalance();
 
-    if (START_BALANCE == 0) START_BALANCE = CURRENT_BALANCE;
+    // 🚨🚨🚨 FIX YA BUG HATARI (kwa ombi la mtumiaji - "BOD DISABLED"
+    // baada ya trade MOJA tu ya $1 kwenye akaunti ya $9000+): tuligundua
+    // kwamba '_getBalance()' ikirudisha '0' (kwa sababu ya hitilafu ya
+    // MUDA ya mtandao/muunganiko - jambo tulilokutana nalo mara kadhaa
+    // leo, hata na retry logic iliyopo), '_checkEquityProtection()'
+    // ilikuwa ikihesabu "drawdown ya 100%" ($9000+ -> $0) na KUWASHA
+    // KILL_SWITCH MARA MOJA - bila kujali kama '0' hiyo ni HALISI (jambo
+    // lisilowezekana kutoka trade MOJA ya $1) au ni kushindwa tu kwa
+    // muda kupata balance halisi. Sasa: kama balance mpya ni '0' (au
+    // chini ya 1% ya CURRENT_BALANCE ya sasa - kushuka kwa ghafla
+    // kusikoaminika), tunakataa kuitumia - tunabaki na CURRENT_BALANCE
+    // ya ZAMANI (ya uhakika zaidi) badala yake, na kuruka uchunguzi wa
+    // equity/daily kwa mzunguko huu (bora kuruka ukaguzi mmoja kuliko
+    // kuzima biashara YOTE kwa uongo).
+    if (freshBalance <= 0 ||
+        (CURRENT_BALANCE > 0 && freshBalance < CURRENT_BALANCE * 0.01)) {
+      _trace(
+        "BALANCE FETCH SUSPICIOUS (kupuuzwa)",
+        "freshBalance=$freshBalance dhidi ya CURRENT_BALANCE ya zamani "
+        "\$${CURRENT_BALANCE.toStringAsFixed(2)} - hii inaonekana kuwa "
+        "hitilafu ya muda ya mtandao, si balance halisi. Kuruka "
+        "ukaguzi wa equity/daily kwa mzunguko huu.",
+      );
+    } else {
+      CURRENT_BALANCE = freshBalance;
 
-    _checkEquityProtection();
-    _checkDailyLimits();
+      if (START_BALANCE == 0) START_BALANCE = CURRENT_BALANCE;
+
+      _checkEquityProtection();
+      _checkDailyLimits();
+    }
 
     if (KILL_SWITCH) {
       _trace("DECISION", "KILL SWITCH");
@@ -654,10 +681,26 @@ Future<void> _closeTrade(ActiveTrade trade, {required String reason}) async {
 
   TradeRegistry.instance.remove(trade.contractId);
 
-  CURRENT_BALANCE = await _getBalance();
+  final freshBalance = await _getBalance();
 
-  _checkEquityProtection();
-  _checkDailyLimits();
+  // FIX ile ile ya usalama - angalia maelezo marefu kwenye eneo la
+  // kwanza la ukaguzi huu (mstari wa kufungua trade) - epuka
+  // KILL_SWITCH ya uongo kutoka balance ya '0' isiyo halisi.
+  if (freshBalance <= 0 ||
+      (CURRENT_BALANCE > 0 && freshBalance < CURRENT_BALANCE * 0.01)) {
+    _trace(
+      "BALANCE FETCH SUSPICIOUS (kupuuzwa)",
+      "freshBalance=$freshBalance dhidi ya CURRENT_BALANCE ya zamani "
+      "\$${CURRENT_BALANCE.toStringAsFixed(2)} - hii inaonekana kuwa "
+      "hitilafu ya muda ya mtandao, si balance halisi. Kuruka "
+      "ukaguzi wa equity/daily kwa mzunguko huu.",
+    );
+  } else {
+    CURRENT_BALANCE = freshBalance;
+
+    _checkEquityProtection();
+    _checkDailyLimits();
+  }
 
   _trace("TRADE CLOSED", {
     "contract": trade.contractId,
