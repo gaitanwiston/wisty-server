@@ -740,9 +740,12 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
   // Deriv inayotupatia (codeArgs), na kujaribu tena.
   int currentMultiplier = DEFAULT_MULTIPLIER;
 
-  // Kikomo cha juu cha majaribio - epuka mzunguko usio na mwisho
-  // endapo hitilafu zisizotarajiwa zikiendelea kujitokeza.
-  const maxAttempts = 3;
+  // Kikomo cha juu cha majaribio - ONGEZWA (3 -> 6) kwa ombi la
+  // mtumiaji: "trade ikubali hali yoyote" - sasa tunashughulikia
+  // aina NYINGI za hitilafu (Multiplier, Min Stake, Max Payout) kwa
+  // mfululizo mmoja - kila moja inaweza kuhitaji jaribio lake, kwa
+  // hiyo tunahitaji nafasi zaidi ya majaribio kuliko awali.
+  const maxAttempts = 6;
 
   PlaceTradeError? lastError;
 
@@ -781,6 +784,11 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
     _trace("PLACE TRADE ATTEMPT $attempt FAILED", "$lastError");
 
     if (attempt == maxAttempts) break;
+
+    // 🚨 KIKOMO CHA JUU CHA STAKE (kimeandaliwa mapema - kinatumika
+    // na fallback zote mbili za stake hapa chini, kuepuka kurudia
+    // hesabu hii mara mbili).
+    final maxAllowedStake = balance * (MAX_STAKE_PERCENT_OF_BALANCE / 100);
 
     // ================= MULTIPLIER NJE YA KIWANGO =================
     // FIX (kwa ombi la mtumiaji - uthibitisho wa moja kwa moja kutoka
@@ -834,6 +842,50 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
       break;
     }
 
+    // ================= KIWANGO CHA CHINI CHA STAKE (ONGEZO JIPYA) =================
+    // FIX (kwa ombi la mtumiaji - "Enter an amount equal to or higher
+    // than 83.06" - hitilafu MPYA tuliyoigundua kutoka logs halisi):
+    // hii NI TOFAUTI na "PayoutLimits" hapa chini - badala ya
+    // 'codeArgs' iliyoundwa, kiwango cha CHINI kinachohitajika
+    // kinapatikana NDANI ya 'message' (maandishi ya bure), si
+    // 'codeArgs'. Tunachukua namba hiyo kwa 'regex', na kuongeza
+    // stake (badala ya kupunguza, kama PayoutLimits inavyofanya) hadi
+    // kiwango hicho (na kidogo zaidi - 2% - kama pambizo la usalama
+    // dhidi ya mabadiliko madogo ya bei kati ya majaribio).
+    final minStakeMatch = RegExp(r'higher than\s+(\d+\.?\d*)')
+        .firstMatch(lastError?.message ?? '');
+
+    if (minStakeMatch != null) {
+      final requiredMin = double.tryParse(minStakeMatch.group(1) ?? '');
+
+      if (requiredMin != null && requiredMin > 0) {
+        var newStake = double.parse(
+          (requiredMin * 1.02).toStringAsFixed(2),
+        );
+
+        if (newStake > maxAllowedStake) {
+          _trace(
+            "RETRY DECISION",
+            "Kiwango cha chini kinachohitajika (\$${requiredMin.toStringAsFixed(2)}) "
+            "kinazidi MAX_STAKE_PERCENT_OF_BALANCE (\$${maxAllowedStake.toStringAsFixed(2)}) "
+            "- haiwezekani kuendelea kwa usalama wa akaunti.",
+          );
+          break;
+        }
+
+        _trace(
+          "RETRY DECISION",
+          "Stake ilikuwa chini ya kiwango cha chini kinachohitajika na "
+          "Deriv - stake \$${currentStake.toStringAsFixed(2)} -> "
+          "\$${newStake.toStringAsFixed(2)} (kiwango cha chini: "
+          "\$${requiredMin.toStringAsFixed(2)}).",
+        );
+
+        currentStake = newStake;
+        continue;
+      }
+    }
+
     // ================= KIKOMO CHA MALIPO/STAKE =================
     // FIX (uthibitisho wa moja kwa moja kutoka Deriv - RAW response
     // halisi): baadhi ya hitilafu za Deriv (mf. "Minimum stake of
@@ -866,9 +918,6 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
           // malipo - hii ndiyo hasa sababu ya kuhamisha uamuzi huu
           // HAPA (trades.dart), si deriv_service.dart (ambayo
           // haikuwa ikijua kuhusu vikomo hivi vya hatari kabisa).
-          final maxAllowedStake =
-              balance * (MAX_STAKE_PERCENT_OF_BALANCE / 100);
-
           if (newStake > maxAllowedStake) newStake = maxAllowedStake;
 
           if (newStake < MIN_STAKE) {
@@ -896,6 +945,31 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
         "RETRY DECISION",
         "Kikomo cha malipo - haikuweza kuhesabu stake mpya kutoka "
         "codeArgs: $codeArgs. Kukata tamaa.",
+      );
+      break;
+    }
+
+    // ================= MUDA/SOKO HALIFANYIKI BIASHARA (ONGEZO
+    // JIPYA - uchunguzi, si fix ya moja kwa moja bado) =================
+    // FIX (kwa ombi la mtumiaji - "Trading is not offered for this
+    // duration" kwa Multipliers - hitilafu isiyotarajiwa kabisa,
+    // kwa kuwa HATUTUMI 'duration' yoyote kwa Multipliers): hii
+    // INAWEZEKANA ni ishara kwamba SOKO LIMEFUNGWA kwa alama hii
+    // muda huo (mf. Forex nje ya masaa ya biashara, wikendi) - jambo
+    // AMBALO HALIWEZI kutatuliwa kwa kubadilisha stake/multiplier
+    // KABISA (kujaribu tena hakutasaidia mpaka soko lifunguke). Kwa
+    // sasa tunachapisha ONYO WAZI (diagnostic) badala ya kujaribu
+    // "fix" ya kubahatisha - tukiona hii ikiendelea kutokea kwa
+    // masaa ya kawaida ya soko (si wikendi/usiku), tutahitaji
+    // kuchunguza zaidi na ushahidi mpya.
+    if (lastError?.message.contains("duration") ?? false) {
+      _trace(
+        "RETRY DECISION",
+        "'Trading is not offered for this duration' kwa $symbol - "
+        "hii mara nyingi inamaanisha SOKO LIMEFUNGWA kwa alama hii "
+        "muda huu (Forex nje ya masaa ya biashara/wikendi) - "
+        "kubadilisha stake/multiplier hakuwezi kusaidia. Kukata "
+        "tamaa kwa usalama.",
       );
       break;
     }
