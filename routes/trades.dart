@@ -993,27 +993,46 @@ Future<_TradeAttemptResult> _placeTradeWithRetries({
     }
 
     // ================= MUDA/SOKO HALIFANYIKI BIASHARA (ONGEZO
-    // JIPYA - uchunguzi, si fix ya moja kwa moja bado) =================
+    // JIPYA - sasa na uchunguzi wa KINA kupitia contracts_for) =================
     // FIX (kwa ombi la mtumiaji - "Trading is not offered for this
-    // duration" kwa Multipliers - hitilafu isiyotarajiwa kabisa,
-    // kwa kuwa HATUTUMI 'duration' yoyote kwa Multipliers): hii
-    // INAWEZEKANA ni ishara kwamba SOKO LIMEFUNGWA kwa alama hii
-    // muda huo (mf. Forex nje ya masaa ya biashara, wikendi) - jambo
-    // AMBALO HALIWEZI kutatuliwa kwa kubadilisha stake/multiplier
-    // KABISA (kujaribu tena hakutasaidia mpaka soko lifunguke). Kwa
-    // sasa tunachapisha ONYO WAZI (diagnostic) badala ya kujaribu
-    // "fix" ya kubahatisha - tukiona hii ikiendelea kutokea kwa
-    // masaa ya kawaida ya soko (si wikendi/usiku), tutahitaji
-    // kuchunguza zaidi na ushahidi mpya.
+    // duration" kwa Multipliers - bado inatokea baada ya jaribio la
+    // kwanza la kudhania "soko limefungwa"): badala ya kukisia tu,
+    // sasa tunauliza Deriv MOJA KWA MOJA (kupitia 'contracts_for')
+    // kuona maelezo KAMILI ya Multiplier ya alama hii - hii itatuonyesha
+    // kama kuna kikomo cha muda/expiry ambacho hatukuwa tunakijua (mf.
+    // 'min_contract_duration'/'max_contract_duration' zinazoweza
+    // kuwepo hata kwa Multipliers kwa alama fulani), AU kama alama hii
+    // KWELI haipatikani kabisa wakati huu (ikithibitisha nadharia ya
+    // "soko limefungwa").
     if (lastError?.message.contains("duration") ?? false) {
       _trace(
         "RETRY DECISION",
         "'Trading is not offered for this duration' kwa $symbol - "
-        "hii mara nyingi inamaanisha SOKO LIMEFUNGWA kwa alama hii "
-        "muda huu (Forex nje ya masaa ya biashara/wikendi) - "
-        "kubadilisha stake/multiplier hakuwezi kusaidia. Kukata "
-        "tamaa kwa usalama.",
+        "kuchunguza kwa kina kupitia contracts_for kabla ya kukata "
+        "tamaa...",
       );
+
+      final details = await deriv.getContractDurationLimits(
+        derivSymbol,
+        isBuy ? "MULTUP" : "MULTDOWN",
+      );
+
+      if (details != null) {
+        _trace(
+          "DURATION ERROR - MAELEZO KAMILI YA MULTIPLIER (contracts_for)",
+          details,
+        );
+      } else {
+        _trace(
+          "DURATION ERROR - contracts_for",
+          "$symbol haina entry ya MULTUP/MULTDOWN kabisa wakati huu - "
+          "hii inathibitisha kuwa alama hii/soko HALIPATIKANI kwa "
+          "Multipliers wakati huu (uwezekano mkubwa: Forex nje ya "
+          "masaa ya biashara, au wikendi). Kubadilisha stake/multiplier "
+          "hakuwezi kusaidia - kukata tamaa kwa usalama.",
+        );
+      }
+
       break;
     }
 
