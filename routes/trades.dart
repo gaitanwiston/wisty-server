@@ -97,20 +97,62 @@ Future<Response> onRequest(RequestContext context) async {
     // inatarajia 'data["trades"]' iwe ORODHA ya maelezo kamili ya kila
     // trade - bila hii, jopo la "Open Trades" lingeonyesha "Hakuna
     // trade" KILA WAKATI, hata kama kweli kuna trades wazi.
+    // 🚨🚨🚨 ONGEZO JIPYA (kwa ombi la mtumiaji - "nataka kuona
+    // movement ya profit/loss na stake, si SL/TP tu"): 'ActiveTrade'
+    // TAYARI ilikuwa na kila kitu kinachohitajika (current, entry,
+    // stake, multiplier, buy) - kilichokosekana ni KUHESABU na
+    // KURUDISHA 'pnl' (faida/hasara ya SASA) na 'stake' kwenye
+    // response hii. Fomula ni ile ile inayotumika Deriv kwa
+    // Multipliers: pnl = stake * multiplier * (mabadiliko ya asilimia
+    // ya bei, kwa mwelekeo sahihi wa BUY/SELL).
     final tradesList = TradeRegistry.instance.trades.values
         .where((t) => !t.closed)
-        .map((t) => {
-              "contractId": t.contractId,
-              "pair": t.pair,
-              "buy": t.buy,
-              "entryPrice": t.entry,
-              "sl": t.sl,
-              "tp": t.tp,
-              "current": t.current,
-              "breakeven": t.breakeven,
-              "status": "OPEN",
-              "openedAt": t.openedAt.toIso8601String(),
-            })
+        .map((t) {
+          double pnl = 0;
+          double pnlPercent = 0;
+
+          if (t.entry > 0 && t.current > 0) {
+            final priceChangePercent = t.buy
+                ? (t.current - t.entry) / t.entry
+                : (t.entry - t.current) / t.entry;
+
+            pnl = double.parse(
+              (t.stake * t.multiplier * priceChangePercent).toStringAsFixed(2),
+            );
+
+            // pnlPercent: faida/hasara kama asilimia ya STAKE (si ya
+            // bei) - hii ndiyo namba muhimu zaidi kwa mtumiaji (mfano
+            // "+15.4%" ya fedha aliyoweka, si ya bei ya soko).
+            if (t.stake > 0) {
+              pnlPercent = double.parse(
+                ((pnl / t.stake) * 100).toStringAsFixed(2),
+              );
+            }
+          }
+
+          return {
+            "contractId": t.contractId,
+            "pair": t.pair,
+            "buy": t.buy,
+            "entryPrice": t.entry,
+            "sl": t.sl,
+            "tp": t.tp,
+            // FIX: jina la field limebadilishwa kuwa 'currentPrice'
+            // (si 'current') - kuendana na 'OpenTrade.fromJson()'
+            // halisi ya Flutter app (models/open_trade.dart).
+            "currentPrice": t.current,
+            "stake": t.stake,
+            "multiplier": t.multiplier,
+            // ONGEZO JIPYA: faida/hasara ya SASA (moja kwa moja,
+            // haiba subiri trade ifunge) - kwa fedha (USD) na
+            // asilimia ya stake.
+            "pnl": pnl,
+            "pnlPercent": pnlPercent,
+            "breakeven": t.breakeven,
+            "status": "OPEN",
+            "openedAt": t.openedAt.toIso8601String(),
+          };
+        })
         .toList();
 
     return Response.json(
@@ -521,7 +563,39 @@ void _subscribeToTrade(ActiveTrade trade) {
   final sub = deriv.subscribeContract(trade.contractId, (tick) async {
     if (trade.closed) return;
 
-    final price = (tick['price'] as num? ?? 0).toDouble();
+    // 🚨🚨🚨 ONGEZO JIPYA (kwa ombi la mtumiaji - "nikifunga trade
+    // moja kwa moja Deriv.com, app inaendelea kuionyesha wazi"):
+    // 'subscribeContract()' sasa ni subscription HALISI ya
+    // 'proposal_open_contract' - Deriv inatutumia 'is_sold'/
+    // 'is_expired' MOJA KWA MOJA. Kama contract IMESHAFUNGWA (kwa
+    // njia YOYOTE - Deriv.com, app nyingine, au SL/TP ya Deriv
+    // yenyewe) - tunang'oa kutoka TradeRegistry MARA MOJA, bila
+    // kujaribu 'sellContract()' tena (haina maana - tayari imeuzwa).
+    final isSold = tick["is_sold"] == 1;
+    final isExpired = tick["is_expired"] == 1;
+
+    if (isSold || isExpired) {
+      trade.closed = true;
+      TradeRegistry.instance.remove(trade.contractId);
+
+      _trace(
+        "TRADE CLOSED (nje ya app - Deriv.com au njia nyingine)",
+        {
+          "contract": trade.contractId,
+          "is_sold": isSold,
+          "is_expired": isExpired,
+        },
+      );
+
+      CURRENT_BALANCE = await _getBalance();
+      return;
+    }
+
+    // FIX: field imebadilika kutoka 'price' kwenda 'current_spot' -
+    // sasa tunapokea data ya 'proposal_open_contract' HALISI (si
+    // 'tick' ya jumla), ambayo Deriv inaita bei ya sasa
+    // 'current_spot'.
+    final price = (tick['current_spot'] as num? ?? 0).toDouble();
     trade.current = price;
 
     final risk = (trade.entry - trade.sl).abs();

@@ -36,7 +36,7 @@ const String derivAppId = "33SNU6dEw3F7xVhyEHxz3"; // 🚨 BADILISHA HII na App 
 // inahitaji hatua ya REST kwanza (kupata "OTP" - One Time Password)
 // ikitumia Account ID + Token, KISHA kuunganisha kwa WebSocket URL
 // maalum inayorudishwa (yenye OTP ndani yake tayari).
-const String derivAccountId = "DOT93181287"; // Account ID yako
+const String derivAccountId = "ROT91878830"; // Account ID yako
 
 
 // FIX / MABORESHO: awali kulikuwa tu na m1, h1, h4, d1, w1, mn.
@@ -2609,49 +2609,55 @@ List<model.Candle> _aggregateCalendar(
   // (COMPATIBILITY FOR trades.dart)
   // =====================================================
 
-
+  // 🚨🚨🚨 FIX YA BUG KUBWA (kwa ombi la mtumiaji - "nikifunga trade
+  // moja kwa moja kwenye Deriv.com, app inaendelea kuionyesha kama
+  // WAZI"): AWALI kazi hii HAIKUWAHI kutuma ombi la 'subscribe' kwa
+  // Deriv KABISA - ilikuwa ikisubiri TU matukio yanayolingana na
+  // 'contract_id' kwenye stream ya JUMLA, bila kuwahi kuiambia Deriv
+  // "nipe taarifa za contract hii". Hii ilimaanisha 'trades.dart'
+  // haikuwa na njia YOYOTE ya kujua Deriv ikisema contract imeuzwa
+  // (kwa njia YOYOTE - ikiwemo Deriv.com moja kwa moja, si kupitia
+  // app yetu tu) - 'TradeRegistry' ilibaki na trade ikionekana
+  // "wazi" MILELE hadi SL/TP YETU wenyewe ikithibitisha (kutumia
+  // bei ya alama, si hali HALISI ya contract).
+  //
+  // Sasa: tunatuma ombi HALISI la 'proposal_open_contract' na
+  // 'subscribe:1' - Deriv itatutumia (push) taarifa ZA MOJA KWA MOJA
+  // za hali ya contract hii KILA MARA inapobadilika (bei, is_sold,
+  // is_expired, profit) - IKIWEMO pale inapofungwa kwa njia YOYOTE
+  // (Deriv.com, app nyingine, au sisi wenyewe).
   StreamSubscription subscribeContract(
-
     String id,
+    Function(Map<String, dynamic>) onUpdate,
+  ) {
+    final contractIdInt = int.tryParse(id);
 
-    Function(
-      Map<String,dynamic>
-    ) onUpdate,
+    // Tuma ombi la subscribe HALISI - hakuna req_id ya kipekee hapa
+    // kwa MAKUSUDI (hii ni subscription ya KUDUMU, si ombi la mara
+    // moja - Deriv itatuma matukio MENGI kwa muda, si jibu MOJA tu).
+    _send({
+      "proposal_open_contract": 1,
+      "contract_id": contractIdInt ?? id,
+      "subscribe": 1,
+    });
 
-  ){
+    return stream.listen((event) {
+      if (event["msg_type"] != "proposal_open_contract") return;
 
+      final poc = event["proposal_open_contract"];
 
+      if (poc == null) return;
 
-    return stream.listen(
+      final cid = poc["contract_id"]?.toString();
 
-      (event){
+      if (cid == null || cid != id.toString()) return;
 
-
-
-        final cid =
-
-            event["contract_id"]
-            ?.toString();
-
-
-
-        if(cid != null &&
-
-            cid == id.toString()){
-
-
-          onUpdate(event);
-
-
-        }
-
-
-
-      },
-
-    );
-
-
+      // ONGEZO JIPYA: tunapitisha 'poc' (data ya ndani, yenye
+      // 'current_spot', 'is_sold', 'is_expired', 'profit' - si
+      // 'event' nzima) - 'trades.dart' inatarajia fields hizi moja
+      // kwa moja (angalia _subscribeToTrade()).
+      onUpdate(poc as Map<String, dynamic>);
+    });
   }
 
 
