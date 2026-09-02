@@ -86,8 +86,66 @@ void _trace(String title, dynamic msg) {
   print("[SERVER2-TRACE] ======================\n");
 }
 
+// 🚨🚨🚨 ONGEZO JIPYA (kwa ombi la mtumiaji - "trade imefungwa kwenye
+// Deriv.com/kwa mkono, lakini bado inaonekana kwenye app"): badala ya
+// kutegemea TU tukio la 'is_sold'/'is_expired' (ambalo linaweza
+// kukosekana kwa sababu mbalimbali - muunganiko kukatika kwa muda,
+// server kuanzishwa upya, hitilafu isiyotarajiwa, n.k.), sasa tuna
+// "wavu wa usalama" wa PILI: kila sekunde 20, tunathibitisha KILA
+// trade iliyo kwenye TradeRegistry MOJA KWA MOJA na Deriv (kupitia
+// 'verifyContractClosed()' - imethibitishwa tayari kufanya kazi kwa
+// hali ya "sell timeout"), na kuiondoa endapo Deriv inasema tayari
+// imefungwa - HII NI SUALA LA "SELF-HEALING": haijalishi NI SABABU
+// GANI ilisababisha taarifa ya awali kukosekana, orodha itasahihika
+// yenyewe ndani ya sekunde 20 kila mara.
+bool _reconciliationStarted = false;
+
+void _ensureReconciliationRunning() {
+  if (_reconciliationStarted) return;
+  _reconciliationStarted = true;
+
+  Timer.periodic(const Duration(seconds: 20), (_) async {
+    final deriv = DerivService.instance;
+
+    // Nakili orodha kwanza - epuka "concurrent modification" endapo
+    // trade inaondolewa wakati tunazunguka (iterate) orodha hii hii.
+    final activeTrades =
+        TradeRegistry.instance.trades.values.where((t) => !t.closed).toList();
+
+    for (final trade in activeTrades) {
+      try {
+        final actuallyClosed =
+            await deriv.verifyContractClosed(trade.contractId);
+
+        if (actuallyClosed) {
+          trade.closed = true;
+          TradeRegistry.instance.remove(trade.contractId);
+
+          _trace(
+            "RECONCILIATION - TRADE ILIONDOLEWA (ilikuwa tayari "
+            "imefungwa kwa Deriv, taarifa ya moja kwa moja ilikosekana)",
+            trade.contractId,
+          );
+        }
+      } catch (e) {
+        _trace("RECONCILIATION ERROR", "${trade.contractId}: $e");
+      }
+    }
+  });
+
+  print(
+    "[SERVER2-TRACE] ✅ Reconciliation timer imeanzishwa - "
+    "itathibitisha trades zote kila sekunde 20.",
+  );
+}
+
 /// ================= ENTRY =================
 Future<Response> onRequest(RequestContext context) async {
+  // ONGEZO JIPYA: hakikisha "reconciliation timer" inaendesha - hii
+  // ni "lazy init" (inaanza mara ya KWANZA tu ombi lolote linapofika
+  // kwenye route hii, kisha inaendelea kudumu maisha yote ya server).
+  _ensureReconciliationRunning();
+
   if (context.request.method == HttpMethod.get) {
     // 🚨 FIX (bug halisi - "Open Trades" haikuwahi kuonyesha chochote):
     // awali GET hii ilikuwa ikirudisha TU muhtasari (idadi ya
@@ -571,8 +629,11 @@ void _subscribeToTrade(ActiveTrade trade) {
     // njia YOYOTE - Deriv.com, app nyingine, au SL/TP ya Deriv
     // yenyewe) - tunang'oa kutoka TradeRegistry MARA MOJA, bila
     // kujaribu 'sellContract()' tena (haina maana - tayari imeuzwa).
-    final isSold = tick["is_sold"] == 1;
-    final isExpired = tick["is_expired"] == 1;
+    // FIX (usalama ule ule - Deriv inaweza kutuma '1'/'0' kama String
+    // pia, si namba tu): tunatumia 'toString()' kulinganisha, si
+    // ulinganifu wa moja kwa moja na int 1.
+    final isSold = tick["is_sold"]?.toString() == "1";
+    final isExpired = tick["is_expired"]?.toString() == "1";
 
     if (isSold || isExpired) {
       trade.closed = true;
@@ -595,7 +656,21 @@ void _subscribeToTrade(ActiveTrade trade) {
     // sasa tunapokea data ya 'proposal_open_contract' HALISI (si
     // 'tick' ya jumla), ambayo Deriv inaita bei ya sasa
     // 'current_spot'.
-    final price = (tick['current_spot'] as num? ?? 0).toDouble();
+    //
+    // 🚨🚨🚨 FIX YA BUG HALISI (kwa ombi la mtumiaji - hitilafu
+    // "type 'String' is not a subtype of type 'num?' in type cast"
+    // iliyokuwa ikijirudia KILA SEKUNDE): 'current_spot' kutoka
+    // Deriv INAWEZA kurudi kama String (mf. "9735.85"), si namba
+    // moja kwa moja - `as num?` (aina KALI ya Dart) ilikuwa
+    // ikishindwa (throw) KABISA badala ya kurudisha 'null' kwa
+    // upole, ikizuia SL/TP monitoring YOTE kufanya kazi kwa trade
+    // hii. Sasa tunatumia 'num.tryParse()' (kupitia toString() -
+    // inafanya kazi SAWA kama 'current_spot' ni String AU namba
+    // tayari).
+    final rawSpot = tick['current_spot'];
+    final price = rawSpot == null
+        ? 0.0
+        : (num.tryParse(rawSpot.toString())?.toDouble() ?? 0.0);
     trade.current = price;
 
     final risk = (trade.entry - trade.sl).abs();
